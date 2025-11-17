@@ -14,6 +14,11 @@ ENV_FILE="$USER_HOME/.env"
 echo -n "Enter remote server IP: "
 read REMOTE_HOST
 
+# Prompt for remote password
+echo -n "Enter SSH password for root@$REMOTE_HOST: "
+read -s REMOTE_PASS
+echo ""
+
 REMOTE_USER="root"
 REMOTE_DIR="/home"   # <-- Drop backup in /home on remote VM
 
@@ -44,7 +49,7 @@ echo "=== Local backup complete: $ARCHIVE ==="
 
 # === SCP TRANSFER ===
 echo "=== Transferring backup to remote server ($REMOTE_HOST) ==="
-scp "$ARCHIVE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR"
+sshpass -p "$REMOTE_PASS" scp "$ARCHIVE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR"
 
 echo "=== Transfer complete! ==="
 echo "Backup placed at: root@$REMOTE_HOST:/home"

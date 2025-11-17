@@ -6,7 +6,7 @@ chmod +x /home/snailycad/backup_snaily.sh
 
 
 
-
+********************************
 
 
 nano /home/import_snaily.sh

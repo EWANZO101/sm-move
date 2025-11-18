@@ -1,9 +1,9 @@
 wget -O /home/backup_snaily.sh https://raw.githubusercontent.com/EWANZO101/sm-move/main/backup_snaily.sh
 
 
-chmod +x /home/snailycad/backup_snaily.sh
+chmod +x /home/backup_snaily.sh
 
-/home/snailycad/backup_snaily.sh
+/home/backup_snaily.sh
 
 
 

@@ -3,6 +3,7 @@ wget -O /home/backup_snaily.sh https://raw.githubusercontent.com/EWANZO101/sm-mo
 
 chmod +x /home/backup_snaily.sh
 
+
 /home/backup_snaily.sh
 
 

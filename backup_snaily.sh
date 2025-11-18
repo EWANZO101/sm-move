@@ -4,7 +4,7 @@
 set -e
 
 # === CONFIG ===
-DB_NAME="snaily_cadv4"
+DB_NAME="snaily-cadv4"
 DB_USER="snailycad"
 USER_HOME="/home/snailycad"
 BACKUP_DIR="$USER_HOME/backups"

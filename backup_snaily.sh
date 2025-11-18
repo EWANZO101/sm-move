@@ -10,16 +10,59 @@ REMOTE_USER="root"
 REMOTE_DIR="/home"
 RETENTION_DAYS=7
 
-# === REQUIREMENTS CHECK ===
-for cmd in pg_dump sshpass tar; do
+# === REQUIREMENTS CHECK & AUTO-INSTALL ===
+echo "=== Checking requirements ==="
+
+for cmd in pg_dump tar; do
     if ! command -v $cmd >/dev/null 2>&1; then
         echo "ERROR: '$cmd' is required but not installed."
         exit 1
     fi
 done
 
+# Check for sshpass and offer to install it
+if ! command -v sshpass >/dev/null 2>&1; then
+    echo "WARNING: 'sshpass' is not installed."
+    echo -n "Would you like to install it now? (y/n): "
+    read -r INSTALL_CHOICE
+    
+    if [[ "$INSTALL_CHOICE" =~ ^[Yy]$ ]]; then
+        echo "Installing sshpass..."
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install sshpass -y
+        elif command -v yum >/dev/null 2>&1; then
+            sudo yum install sshpass -y
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install sshpass -y
+        else
+            echo "ERROR: Could not detect package manager. Please install sshpass manually."
+            exit 1
+        fi
+        
+        # Verify installation
+        if ! command -v sshpass >/dev/null 2>&1; then
+            echo "ERROR: sshpass installation failed."
+            exit 1
+        fi
+        echo "sshpass installed successfully!"
+    else
+        echo "ERROR: sshpass is required. Please install it manually with:"
+        echo "  sudo apt install sshpass"
+        exit 1
+    fi
+fi
+
+echo "All requirements satisfied!"
+echo ""
+
 # === DISK SPACE CHECK ===
-AVAILABLE=$(df "$BACKUP_DIR" | awk 'NR==2 {print $4}')
+AVAILABLE=$(df "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+if [ -z "$AVAILABLE" ]; then
+    # Backup dir doesn't exist yet, check parent directory
+    PARENT_DIR=$(dirname "$BACKUP_DIR")
+    AVAILABLE=$(df "$PARENT_DIR" | awk 'NR==2 {print $4}')
+fi
+
 if [ "$AVAILABLE" -lt 1048576 ]; then
     echo "ERROR: Less than 1GB available. Cannot proceed."
     exit 1
@@ -202,3 +245,17 @@ echo "Compressed Archive: $ARCHIVE_SIZE"
 echo "Remote Location: root@$REMOTE_HOST:/home/$(basename "$ARCHIVE")"
 echo ""
 echo "=== BACKUP PROCESS COMPLETE ==="
+```
+
+## What Changed:
+
+1. **Auto-detects if `sshpass` is missing**
+2. **Offers to install it automatically**
+3. **Detects your package manager** (apt-get, yum, or dnf)
+4. **Installs sshpass** with the appropriate command
+5. **Verifies installation** before continuing
+
+Now when you run the script, if `sshpass` is missing, you'll see:
+```
+WARNING: 'sshpass' is not installed.
+Would you like to install it now? (y/n):

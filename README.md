@@ -7,7 +7,7 @@ chmod +x /home/snailycad/backup_snaily.sh
 
 
 
-wget -O /home/import_snaily.sh https://raw.githubusercontent.com/EWANZO101/sm-move/blob/main/import_snaily.sh
+wget -O /home/import_snaily.sh https://raw.githubusercontent.com/EWANZO101/sm-move/main/import_snaily.sh
 
 
 chmod +x /home/import_snaily.sh

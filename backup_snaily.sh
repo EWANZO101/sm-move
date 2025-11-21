@@ -2,54 +2,27 @@
 set -e
 
 ### ============================================
-###  AUTO-DETECT CORRECT USER & PATHS
+###  SNAILYCAD V4 PATHS
 ### ============================================
-echo "=== Auto-detecting SnailyCAD user ==="
+echo "=== SnailyCAD v4 Backup Script ==="
 
-# Priority order: snailycad, cad, ubuntu, current user, first non-root home user
-CANDIDATES=("snailycad" "cad" "ubuntu" "$SUDO_USER" "$USER")
+SNAILYCAD_DIR="/home/snaily-cadv4"
+ENV_FILE="$SNAILYCAD_DIR/.env"
+BACKUP_DIR="$SNAILYCAD_DIR/backups"
 
-DETECTED_USER=""
-for usr in "${CANDIDATES[@]}"; do
-    if id "$usr" >/dev/null 2>&1; then
-        DETECTED_USER="$usr"
-        break
-    fi
-done
-
-# If no match found, detect first non-root folder in /home
-if [[ -z "$DETECTED_USER" ]]; then
-    DETECTED_USER=$(ls /home | grep -v "root" | head -n1)
-fi
-
-if [[ -z "$DETECTED_USER" ]]; then
-    echo "ERROR: Could not detect SnailyCAD user."
-    exit 1
-fi
-
-echo "Detected user: $DETECTED_USER"
-
-USER_HOME="/home/$DETECTED_USER"
-BACKUP_DIR="$USER_HOME/backups"
-ENV_FILE="$USER_HOME/.env"
-
-DB_NAME="snailycad"
+RETENTION_DAYS=7
 REMOTE_USER="root"
 REMOTE_DIR="/home"
-RETENTION_DAYS=7
 
-echo "SnailyCAD user home: $USER_HOME"
+echo "SnailyCAD directory: $SNAILYCAD_DIR"
 echo "Backup directory: $BACKUP_DIR"
 echo ""
 
 ### ============================================
-### CREATE BACKUP DIRECTORY AND FIX PERMISSIONS
+### CREATE BACKUP DIRECTORY
 ### ============================================
 echo "=== Ensuring backup directory exists ==="
 mkdir -p "$BACKUP_DIR"
-
-# Ensure directory belongs to the detected user
-chown -R "$DETECTED_USER":"$DETECTED_USER" "$BACKUP_DIR"
 chmod 755 "$BACKUP_DIR"
 
 echo "Backup directory ready."
@@ -87,22 +60,52 @@ echo "All requirements satisfied."
 echo ""
 
 ### ============================================
-### CHECK DATABASE & ENV FILE
+### CHECK & LOAD ENV FILE
 ### ============================================
-echo "=== Validating database & .env file ==="
-
-if ! sudo -u postgres psql -tAc "SELECT 1" >/dev/null 2>&1; then
-    echo "ERROR: PostgreSQL not accessible."
-    exit 1
-fi
+echo "=== Loading database credentials from .env ==="
 
 if [[ ! -f "$ENV_FILE" ]]; then
     echo "ERROR: .env file not found at $ENV_FILE"
     exit 1
 fi
 
-echo "Database OK"
-echo ".env file found"
+# Extract database credentials from .env
+DB_HOST=$(grep "^POSTGRES_HOST=" "$ENV_FILE" | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+DB_PORT=$(grep "^POSTGRES_PORT=" "$ENV_FILE" | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+DB_USER=$(grep "^POSTGRES_USER=" "$ENV_FILE" | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+DB_PASSWORD=$(grep "^POSTGRES_PASSWORD=" "$ENV_FILE" | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+DB_NAME=$(grep "^POSTGRES_DB=" "$ENV_FILE" | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+
+# Set defaults if not found
+DB_HOST=${DB_HOST:-localhost}
+DB_PORT=${DB_PORT:-5432}
+DB_USER=${DB_USER:-snailycad}
+DB_NAME=${DB_NAME:-snailycad}
+
+if [[ -z "$DB_PASSWORD" ]]; then
+    echo "ERROR: Could not find POSTGRES_PASSWORD in .env file"
+    exit 1
+fi
+
+echo "Database: $DB_NAME"
+echo "Host: $DB_HOST:$DB_PORT"
+echo "User: $DB_USER"
+echo ""
+
+### ============================================
+### TEST DATABASE CONNECTION
+### ============================================
+echo "=== Testing database connection ==="
+
+export PGPASSWORD="$DB_PASSWORD"
+
+if ! psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
+    echo "ERROR: Could not connect to database"
+    echo "Please verify your database credentials in $ENV_FILE"
+    exit 1
+fi
+
+echo "Database connection OK"
 echo ""
 
 ### ============================================
@@ -133,7 +136,7 @@ ARCHIVE="$BACKUP_DIR/snaily_backup_$TS.tar.gz"
 ### DATABASE SIZE REPORT
 ### ============================================
 echo "=== Generating size report ==="
-sudo -u postgres psql -d "$DB_NAME" -c "
+psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "
 SELECT table_name,
        pg_size_pretty(total_bytes) AS total_size,
        pg_size_pretty(index_bytes) AS index_size,
@@ -156,7 +159,7 @@ ORDER BY total_bytes DESC;
 ### DATABASE BACKUP
 ### ============================================
 echo "=== Backing up database ==="
-sudo -u postgres pg_dump "$DB_NAME" -f "$DB_BACKUP"
+pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" "$DB_NAME" -f "$DB_BACKUP"
 
 ### ============================================
 ### ENV BACKUP
@@ -168,12 +171,18 @@ cp "$ENV_FILE" "$ENV_BACKUP"
 ### CREATE ARCHIVE
 ### ============================================
 echo "=== Creating archive ==="
-tar -czf "$ARCHIVE" "$DB_BACKUP" "$ENV_BACKUP" "$SIZE_REPORT"
+tar -czf "$ARCHIVE" -C "$BACKUP_DIR" \
+    "$(basename "$DB_BACKUP")" \
+    "$(basename "$ENV_BACKUP")" \
+    "$(basename "$SIZE_REPORT")"
 
 ### ============================================
 ### CLEAN TEMP FILES
 ### ============================================
 rm -f "$DB_BACKUP" "$ENV_BACKUP" "$SIZE_REPORT"
+
+# Unset password from environment
+unset PGPASSWORD
 
 echo "Local backup created: $ARCHIVE"
 
@@ -192,3 +201,5 @@ echo "=== Cleaning backups older than $RETENTION_DAYS days ==="
 find "$BACKUP_DIR" -name "snaily_backup_*.tar.gz" -mtime +$RETENTION_DAYS -delete
 
 echo "=== BACKUP COMPLETE ==="
+echo "Backup archive: $(basename "$ARCHIVE")"
+echo "Location: $BACKUP_DIR"

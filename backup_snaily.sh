@@ -33,7 +33,7 @@ USER_HOME="/home/$DETECTED_USER"
 BACKUP_DIR="$USER_HOME/backups"
 ENV_FILE="$USER_HOME/.env"
 
-DB_NAME="snaily-cadv4"
+DB_NAME="snailycad"
 REMOTE_USER="root"
 REMOTE_DIR="/home"
 RETENTION_DAYS=7

@@ -132,7 +132,7 @@ SIZE_REPORT="$BACKUP_DIR/db_size_report_$TS.txt"
 ARCHIVE="$BACKUP_DIR/snaily_backup_$TS.tar.gz"
 
 ### ============================================
-### DATABASE SIZE REPORT (FIXED VERSION)
+### DATABASE SIZE REPORT (ROBUST VERSION)
 ### ============================================
 echo "=== Generating size report ==="
 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "
@@ -143,8 +143,12 @@ SELECT
     pg_size_pretty(pg_indexes_size(schemaname || '.' || tablename)) AS index_size
 FROM pg_tables 
 WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+  AND pg_total_relation_size(schemaname || '.' || tablename) IS NOT NULL
 ORDER BY pg_total_relation_size(schemaname || '.' || tablename) DESC;
-" > "$SIZE_REPORT"
+" > "$SIZE_REPORT" 2>&1 || {
+    echo "Warning: Size report generation had issues, but continuing with backup..."
+    echo "Database size report generation completed with warnings" > "$SIZE_REPORT"
+}
 
 echo "Size report generated: $SIZE_REPORT"
 
@@ -152,8 +156,12 @@ echo "Size report generated: $SIZE_REPORT"
 ### DATABASE BACKUP
 ### ============================================
 echo "=== Backing up database ==="
-pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" "$DB_NAME" -f "$DB_BACKUP"
-echo "Database backup created: $DB_BACKUP"
+if pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" "$DB_NAME" -f "$DB_BACKUP"; then
+    echo "Database backup created: $DB_BACKUP"
+else
+    echo "ERROR: Failed to create database backup"
+    exit 1
+fi
 
 ### ============================================
 ### ENV BACKUP

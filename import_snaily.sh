@@ -9,7 +9,7 @@ set -euo pipefail
 # Script configuration
 LOG_FILE="/tmp/snaily_import_$(date +%Y%m%d_%H%M%S).log"
 BACKUP_SEARCH_DIR="/home"
-TEMP_DIR="/home/snaily_import_temp_$$"  # $$ adds process ID for uniqueness
+TEMP_DIR="/home/snaily_import_temp_$$"
 
 # Colors for output
 RED='\033[0;31m'
@@ -18,10 +18,12 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Database configuration
-DB_NAME="snaily_cadv4"
-DB_USER="snailycad"
-DB_PASSWORD="snailycad_pass"
+# Database configuration (will be extracted from .env)
+DB_NAME=""
+DB_USER=""
+DB_PASSWORD=""
+DB_HOST=""
+DB_PORT=""
 
 # Logging functions
 log() {
@@ -54,6 +56,45 @@ cleanup() {
 }
 
 trap cleanup EXIT
+
+# Extract database credentials from .env file
+extract_db_credentials() {
+    local env_file="$1"
+    
+    log "Extracting database credentials from .env file..."
+    
+    if [[ ! -f "$env_file" ]]; then
+        log_error "Environment file not found: $env_file"
+        return 1
+    fi
+    
+    # Extract database configuration from .env
+    DB_HOST=$(grep -E '^DATABASE_HOST=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
+    DB_PORT=$(grep -E '^DATABASE_PORT=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
+    DB_NAME=$(grep -E '^DATABASE_NAME=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
+    DB_USER=$(grep -E '^DATABASE_USER=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
+    DB_PASSWORD=$(grep -E '^DATABASE_PASSWORD=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
+    
+    # Set defaults if not found
+    DB_HOST=${DB_HOST:-"localhost"}
+    DB_PORT=${DB_PORT:-"5432"}
+    DB_NAME=${DB_NAME:-"snaily_cadv4"}
+    DB_USER=${DB_USER:-"snailycad"}
+    DB_PASSWORD=${DB_PASSWORD:-"snailycad_pass"}
+    
+    log_success "Database credentials extracted:"
+    log_info "  Host: $DB_HOST"
+    log_info "  Port: $DB_PORT"
+    log_info "  Database: $DB_NAME"
+    log_info "  User: $DB_USER"
+    log_info "  Password: [hidden]"
+    
+    # Verify we have the essential credentials
+    if [[ -z "$DB_NAME" || -z "$DB_USER" ]]; then
+        log_error "Essential database credentials (name or user) not found in .env file"
+        return 1
+    fi
+}
 
 # Self-healing functions
 setup_postgresql_auth() {
@@ -104,6 +145,14 @@ create_snailycad_user() {
     sudo mkdir -p "/home/$DB_USER"
     sudo chown "$DB_USER:$DB_USER" "/home/$DB_USER"
     sudo chmod 755 "/home/$DB_USER"
+    
+    # Verify home directory was created
+    if [[ -d "/home/$DB_USER" ]]; then
+        log_success "Home directory created: /home/$DB_USER"
+    else
+        log_error "Home directory was not created properly"
+        return 1
+    fi
 }
 
 setup_database_user() {
@@ -238,10 +287,13 @@ setup_database() {
     log "=== CONFLICT RESOLUTION: Dropping existing database ==="
     log_warning "This will DELETE the existing '$DB_NAME' database and all its data!"
     
+    # Set password for psql commands
+    export PGPASSWORD="$DB_PASSWORD"
+    
     # Check if database exists
-    if sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
+    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
         log_warning "Database '$DB_NAME' exists - dropping..."
-        if dropdb -U postgres "$DB_NAME"; then
+        if dropdb -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" "$DB_NAME"; then
             log_success "Dropped existing database: $DB_NAME"
         else
             log_error "Failed to drop database: $DB_NAME"
@@ -252,7 +304,7 @@ setup_database() {
     fi
     
     log "Creating fresh database '$DB_NAME'..."
-    if createdb -U "$DB_USER" "$DB_NAME"; then
+    if createdb -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" "$DB_NAME"; then
         log_success "Database created successfully"
     else
         log_error "Failed to create database"
@@ -272,7 +324,7 @@ import_database() {
     # Check file type and import accordingly
     if [[ "$db_dump" == *.sql ]]; then
         # SQL dump
-        if psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$db_dump" >> "$LOG_FILE" 2>&1; then
+        if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$db_dump" >> "$LOG_FILE" 2>&1; then
             log_success "Database import completed successfully"
         else
             log_error "Failed to import SQL dump"
@@ -280,7 +332,7 @@ import_database() {
         fi
     elif [[ "$db_dump" == *.dump ]]; then
         # PostgreSQL custom format dump
-        if pg_restore -h localhost -U "$DB_USER" -d "$DB_NAME" "$db_dump" >> "$LOG_FILE" 2>&1; then
+        if pg_restore -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" "$db_dump" >> "$LOG_FILE" 2>&1; then
             log_success "Database import completed successfully"
         else
             log_error "Failed to restore database dump"
@@ -293,7 +345,7 @@ import_database() {
     
     # Verify import
     local db_size
-    db_size=$(psql -h localhost -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT pg_size_pretty(pg_database_size('$DB_NAME'));" 2>/dev/null || echo "unknown")
+    db_size=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT pg_size_pretty(pg_database_size('$DB_NAME'));" 2>/dev/null || echo "unknown")
     log_info "Imported database size: $db_size"
 }
 
@@ -306,6 +358,7 @@ restore_env_file() {
     
     # Ensure target directory exists
     sudo mkdir -p "/home/$DB_USER"
+    sudo chown "$DB_USER:$DB_USER" "/home/$DB_USER"
     
     log "Copying .env file to $target_env"
     if sudo cp "$env_file" "$target_env"; then
@@ -327,9 +380,12 @@ restore_env_file() {
 verify_import() {
     log "=== Verifying import ==="
     
+    # Set password for psql commands
+    export PGPASSWORD="$DB_PASSWORD"
+    
     # Check if database is accessible and has tables
     local table_count
-    table_count=$(psql -h localhost -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';" 2>/dev/null || echo "0")
+    table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';" 2>/dev/null || echo "0")
     
     if [[ "$table_count" -gt 0 ]]; then
         log_success "Import verification successful: Found $table_count tables in database"
@@ -355,22 +411,7 @@ main() {
         exit 1
     fi
     
-    if ! setup_postgresql_auth; then
-        log_error "PostgreSQL setup failed"
-        exit 1
-    fi
-    
-    if ! create_snailycad_user; then
-        log_error "User creation failed"
-        exit 1
-    fi
-    
-    if ! setup_database_user; then
-        log_error "Database user setup failed"
-        exit 1
-    fi
-    
-    # Find and extract backup
+    # Find and extract backup FIRST to get the .env file
     local backup_archive
     backup_archive=$(find_backup_archive) || exit 1
     
@@ -388,6 +429,28 @@ main() {
     backup_files=$(locate_backup_files) || exit 1
     
     read -r env_file db_dump <<< "$backup_files"
+    
+    # NOW extract database credentials from the .env file
+    if ! extract_db_credentials "$env_file"; then
+        log_error "Failed to extract database credentials"
+        exit 1
+    fi
+    
+    # Continue with setup using extracted credentials
+    if ! setup_postgresql_auth; then
+        log_error "PostgreSQL setup failed"
+        exit 1
+    fi
+    
+    if ! create_snailycad_user; then
+        log_error "User creation failed"
+        exit 1
+    fi
+    
+    if ! setup_database_user; then
+        log_error "Database user setup failed"
+        exit 1
+    fi
     
     # Database operations
     if ! setup_database; then

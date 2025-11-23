@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# SnailyCAD Database Import Script - Bulletproof Version
-# This version uses temp files to avoid ALL command substitution issues
+# SnailyCAD Database Import Script - Authentication Fix
+# This version properly handles PostgreSQL authentication
 
 set -uo pipefail
 
@@ -122,16 +122,21 @@ setup_postgresql_auth() {
         cp "$pg_hba_file" "$pg_hba_file.backup" 2>/dev/null || true
     fi
     
+    # Ensure md5 authentication for all connections
     if grep -q "^local.*all.*all.*peer" "$pg_hba_file" 2>/dev/null; then
         sed -i.bak 's/^local\s\+all\s\+all\s\+peer/local   all             all                                     md5/' "$pg_hba_file" 2>/dev/null || true
-        log_success "Updated authentication to md5"
-        
-        systemctl restart postgresql 2>/dev/null || true
-        sleep 2
-        log_success "PostgreSQL restarted"
-    else
-        log_info "Authentication already configured"
+        log_success "Updated local authentication to md5"
     fi
+    
+    # Also ensure host connections use md5
+    if ! grep -q "^host.*all.*all.*127.0.0.1/32.*md5" "$pg_hba_file" 2>/dev/null; then
+        echo "host    all             all             127.0.0.1/32            md5" >> "$pg_hba_file" 2>/dev/null || true
+        log_success "Added host authentication rule"
+    fi
+    
+    systemctl restart postgresql 2>/dev/null || true
+    sleep 3
+    log_success "PostgreSQL restarted"
     
     return 0
 }
@@ -158,21 +163,50 @@ create_snailycad_user() {
 setup_database_user() {
     log "Setting up database user: $DB_USER"
     
+    # Check if user exists and drop it for clean slate
     if su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'\"" 2>/dev/null | grep -q 1; then
-        log_info "Database user exists, updating password..."
-        su - postgres -c "psql -c \"ALTER USER \\\"$DB_USER\\\" WITH PASSWORD '$DB_PASSWORD';\"" >/dev/null 2>&1 || true
-        log_success "Password updated"
-    else
-        log "Creating database user..."
-        if su - postgres -c "psql -c \"CREATE USER \\\"$DB_USER\\\" WITH PASSWORD '$DB_PASSWORD' CREATEDB;\"" >/dev/null 2>&1; then
-            log_success "Database user created"
-        else
-            log_error "Failed to create database user"
-            return 1
-        fi
+        log_info "Database user exists, recreating for clean state..."
+        su - postgres -c "psql -c \"DROP USER IF EXISTS \\\"$DB_USER\\\";\"" >/dev/null 2>&1 || true
+        log_info "Dropped existing user"
     fi
     
-    return 0
+    # Create user with proper privileges
+    log "Creating database user with password..."
+    
+    # Escape single quotes in password for SQL
+    local sql_password="${DB_PASSWORD//\'/\'\'}"
+    
+    if su - postgres -c "psql -c \"CREATE USER \\\"$DB_USER\\\" WITH PASSWORD '$sql_password' CREATEDB CREATEROLE LOGIN;\"" 2>/dev/null; then
+        log_success "Database user created"
+    else
+        log_error "Failed to create database user"
+        return 1
+    fi
+    
+    # Grant necessary permissions
+    su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE postgres TO \\\"$DB_USER\\\";\"" 2>/dev/null || true
+    
+    # Test authentication
+    log "Testing database authentication..."
+    export PGPASSWORD="$DB_PASSWORD"
+    
+    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres -c "SELECT 1;" >/dev/null 2>&1; then
+        log_success "✓ Authentication test PASSED"
+        return 0
+    else
+        log_error "✗ Authentication test FAILED"
+        log_info "Debugging authentication issue..."
+        
+        # Show what postgres thinks about this user
+        su - postgres -c "psql -c \"SELECT rolname, rolcanlogin, rolcreatedb FROM pg_roles WHERE rolname='$DB_USER';\"" 2>/dev/null || true
+        
+        log_error "Please check:"
+        log_error "  1. Password in .env matches: ${DB_PASSWORD:0:5}..."
+        log_error "  2. PostgreSQL is accepting connections"
+        log_error "  3. pg_hba.conf allows md5 authentication"
+        
+        return 1
+    fi
 }
 
 # Check dependencies
@@ -288,6 +322,10 @@ setup_database() {
     log "Creating database: $DB_NAME"
     if su - postgres -c "createdb -O \"$DB_USER\" \"$DB_NAME\"" 2>/dev/null; then
         log_success "Database created"
+        
+        # Grant all privileges
+        su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE \\\"$DB_NAME\\\" TO \\\"$DB_USER\\\";\"" 2>/dev/null || true
+        
         return 0
     else
         log_error "Failed to create database"
@@ -388,7 +426,7 @@ verify_import() {
 main() {
     echo ""
     log "==================================================================="
-    log "    SnailyCAD Database Import - BULLETPROOF VERSION"
+    log "    SnailyCAD Database Import - AUTHENTICATION FIX"
     log "==================================================================="
     log "Log: $LOG_FILE"
     log_info "Running as: $(whoami)"
@@ -435,10 +473,15 @@ main() {
         exit 1
     fi
     
-    # Setup
+    # Setup - THIS IS THE CRITICAL PART
     setup_postgresql_auth
     create_snailycad_user
-    setup_database_user
+    
+    # THIS IS WHERE THE FIX IS - proper user setup with authentication test
+    if ! setup_database_user; then
+        log_error "Database user setup failed - cannot continue"
+        exit 1
+    fi
     
     # Import
     if ! setup_database; then
@@ -465,6 +508,10 @@ main() {
     log "User: $DB_USER"
     log "Config: /home/$DB_USER/.env"
     log "Log: $LOG_FILE"
+    echo ""
+    log "Next steps:"
+    log "  1. Verify connection: PGPASSWORD='$DB_PASSWORD' psql -h $DB_HOST -U $DB_USER -d $DB_NAME"
+    log "  2. Test application startup"
     echo ""
     log "==================================================================="
     echo ""

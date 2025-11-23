@@ -305,31 +305,23 @@ extract_backup_archive() {
 
 # Locate backup files within extracted archive
 locate_backup_files() {
-    # Find .env backup file
+    # Find .env backup file (suppress all output)
     local env_file
     env_file=$(find "$TEMP_DIR" -type f \( -name "env_backup_*" -o -name ".env" -o -name "*.env" \) 2>/dev/null | head -n1)
     
     if [[ -z "$env_file" || ! -f "$env_file" ]]; then
-        log_error "No environment backup file found in archive"
         return 1
     fi
     
-    log_success "ENV file found: $(basename "$env_file")"
-    
-    # Find database dump file
+    # Find database dump file (suppress all output)
     local db_dump
     db_dump=$(find "$TEMP_DIR" -type f \( -name "db_backup_*" -o -name "*.sql" -o -name "*.dump" \) 2>/dev/null | head -n1)
     
     if [[ -z "$db_dump" || ! -f "$db_dump" ]]; then
-        log_error "No database dump file found in archive"
         return 1
     fi
     
-    local dump_size
-    dump_size=$(du -h "$db_dump" 2>/dev/null | cut -f1 || echo "unknown")
-    log_success "Database dump found: $(basename "$db_dump") ($dump_size)"
-    
-    # Return both files
+    # Return both files separated by pipe - NO OTHER OUTPUT
     echo "$env_file|$db_dump"
     return 0
 }
@@ -498,8 +490,15 @@ main() {
     local backup_files
     if backup_files=$(locate_backup_files); then
         IFS='|' read -r env_file db_dump <<< "$backup_files"
+        
+        # Now log what we found
+        log_success "ENV file found: $(basename "$env_file")"
+        
+        local dump_size
+        dump_size=$(du -h "$db_dump" 2>/dev/null | cut -f1 || echo "unknown")
+        log_success "Database dump found: $(basename "$db_dump") ($dump_size)"
     else
-        log_error "Could not locate backup files"
+        log_error "Could not locate backup files in archive"
         exit 1
     fi
     

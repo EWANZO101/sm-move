@@ -1,31 +1,33 @@
+# Remove the corrupted file
+rm /home/import_snaily.sh
+
+# Create a new, clean file
+cat > /home/import_snaily.sh << 'SCRIPT_EOF'
 #!/bin/bash
 
-# =============================================
-# SnailyCAD Self-Healing Database Import Script
-# =============================================
-
+# SnailyCAD Database Import Script
 set -euo pipefail
 
-# Script configuration
+# Configuration
 LOG_FILE="/tmp/snaily_import_$(date +%Y%m%d_%H%M%S).log"
 BACKUP_SEARCH_DIR="/home"
 TEMP_DIR="/home/snaily_import_temp_$$"
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Database configuration (will be extracted from .env)
+# Database config (from .env)
 DB_NAME=""
 DB_USER=""
 DB_PASSWORD=""
 DB_HOST=""
 DB_PORT=""
 
-# Logging functions
+# Logging
 log() {
     echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
@@ -46,7 +48,7 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"
 }
 
-# Error handling and cleanup
+# Cleanup
 cleanup() {
     log "Cleaning up temporary files..."
     if [[ -d "$TEMP_DIR" ]]; then
@@ -57,7 +59,7 @@ cleanup() {
 
 trap cleanup EXIT
 
-# Extract database credentials from .env file
+# Extract credentials from .env
 extract_db_credentials() {
     local env_file="$1"
     
@@ -68,14 +70,13 @@ extract_db_credentials() {
         return 1
     fi
     
-    # Extract database configuration from .env
     DB_HOST=$(grep -E '^DATABASE_HOST=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
     DB_PORT=$(grep -E '^DATABASE_PORT=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
     DB_NAME=$(grep -E '^DATABASE_NAME=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
     DB_USER=$(grep -E '^DATABASE_USER=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
     DB_PASSWORD=$(grep -E '^DATABASE_PASSWORD=' "$env_file" | cut -d '=' -f2- | tr -d '"'"'"' | tr -d '[:space:]')
     
-    # Set defaults if not found
+    # Set defaults
     DB_HOST=${DB_HOST:-"localhost"}
     DB_PORT=${DB_PORT:-"5432"}
     DB_NAME=${DB_NAME:-"snaily_cadv4"}
@@ -89,35 +90,28 @@ extract_db_credentials() {
     log_info "  User: $DB_USER"
     log_info "  Password: [hidden]"
     
-    # Verify we have the essential credentials
     if [[ -z "$DB_NAME" || -z "$DB_USER" ]]; then
-        log_error "Essential database credentials (name or user) not found in .env file"
+        log_error "Essential database credentials not found in .env file"
         return 1
     fi
 }
 
-# Self-healing functions
+# Setup PostgreSQL auth
 setup_postgresql_auth() {
     log "Setting up PostgreSQL authentication..."
     
-    # Check if pg_hba.conf exists
     if ! sudo ls /etc/postgresql/*/main/pg_hba.conf >/dev/null 2>&1; then
-        log_error "PostgreSQL configuration not found. Is PostgreSQL installed?"
+        log_error "PostgreSQL configuration not found"
         return 1
     fi
     
-    # Backup current config
     sudo cp /etc/postgresql/*/main/pg_hba.conf /etc/postgresql/*/main/pg_hba.conf.backup 2>/dev/null || true
     
-    # Update authentication method from peer to md5
     if sudo grep -q "peer" /etc/postgresql/*/main/pg_hba.conf; then
         sudo sed -i 's/local   all             all                                     peer/local   all             all                                     md5/g' /etc/postgresql/*/main/pg_hba.conf
         log_success "Updated PostgreSQL authentication to use md5"
-    else
-        log_info "PostgreSQL authentication already uses md5 or other method"
     fi
     
-    # Restart PostgreSQL
     if sudo systemctl restart postgresql; then
         log_success "PostgreSQL restarted successfully"
     else
@@ -126,10 +120,10 @@ setup_postgresql_auth() {
     fi
 }
 
+# Create system user
 create_snailycad_user() {
     log "Creating snailycad system user..."
     
-    # Check if user exists
     if id "$DB_USER" &>/dev/null; then
         log_info "User $DB_USER already exists"
     else
@@ -141,12 +135,10 @@ create_snailycad_user() {
         fi
     fi
     
-    # Ensure home directory exists and has correct permissions
     sudo mkdir -p "/home/$DB_USER"
     sudo chown "$DB_USER:$DB_USER" "/home/$DB_USER"
     sudo chmod 755 "/home/$DB_USER"
     
-    # Verify home directory was created
     if [[ -d "/home/$DB_USER" ]]; then
         log_success "Home directory created: /home/$DB_USER"
     else
@@ -155,19 +147,16 @@ create_snailycad_user() {
     fi
 }
 
+# Setup database user
 setup_database_user() {
     log "Setting up database user..."
     
-    # Check if PostgreSQL user exists and create if not
     if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1; then
         log_info "Database user $DB_USER already exists"
-        
-        # Update password
         if sudo -u postgres psql -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASSWORD';"; then
             log_success "Updated password for database user: $DB_USER"
         fi
     else
-        # Create new user
         if sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD' CREATEDB;"; then
             log_success "Created database user: $DB_USER"
         else
@@ -177,12 +166,12 @@ setup_database_user() {
     fi
 }
 
+# Check dependencies
 check_dependencies() {
     log "Checking dependencies..."
     
     local missing_deps=()
     
-    # Check required commands
     for cmd in psql createdb dropdb pg_restore tar gunzip; do
         if ! command -v "$cmd" &>/dev/null; then
             missing_deps+=("$cmd")
@@ -191,15 +180,11 @@ check_dependencies() {
     
     if [[ ${#missing_deps[@]} -gt 0 ]]; then
         log_error "Missing dependencies: ${missing_deps[*]}"
-        log_info "Installing PostgreSQL and required tools..."
-        
         if command -v apt-get &>/dev/null; then
             sudo apt-get update
             sudo apt-get install -y postgresql postgresql-contrib tar gzip
-        elif command -v yum &>/dev/null; then
-            sudo yum install -y postgresql postgresql-server tar gzip
         else
-            log_error "Cannot install dependencies - unknown package manager"
+            log_error "Cannot install dependencies"
             return 1
         fi
     else
@@ -207,13 +192,12 @@ check_dependencies() {
     fi
 }
 
-# Main import functions
+# Find backup archive
 find_backup_archive() {
     log "Searching for backup archive in $BACKUP_SEARCH_DIR..."
     
     local backup_files=()
     
-    # Find all .tar.gz files in backup directory
     while IFS= read -r -d $'\0' file; do
         backup_files+=("$file")
     done < <(find "$BACKUP_SEARCH_DIR" -maxdepth 1 -name "*.tar.gz" -print0 2>/dev/null)
@@ -223,7 +207,6 @@ find_backup_archive() {
         return 1
     fi
     
-    # Sort by modification time (newest first) and pick the most recent
     local latest_backup
     latest_backup=$(ls -t "${backup_files[@]}" | head -n1)
     
@@ -236,6 +219,7 @@ find_backup_archive() {
     fi
 }
 
+# Extract backup
 extract_backup_archive() {
     local archive_path="$1"
     
@@ -254,12 +238,12 @@ extract_backup_archive() {
     fi
 }
 
+# Locate backup files
 locate_backup_files() {
     log "Locating backup files..."
     
     local env_file db_dump
     
-    # Find environment file
     env_file=$(find "$TEMP_DIR" -name "env_backup_*" -type f | head -n1)
     if [[ -n "$env_file" && -f "$env_file" ]]; then
         log_success "ENV file found: $(basename "$env_file")"
@@ -268,7 +252,6 @@ locate_backup_files() {
         return 1
     fi
     
-    # Find database dump
     db_dump=$(find "$TEMP_DIR" -name "db_backup_*" -type f \( -name "*.sql" -o -name "*.dump" \) | head -n1)
     if [[ -n "$db_dump" && -f "$db_dump" ]]; then
         local dump_size
@@ -283,14 +266,13 @@ locate_backup_files() {
     echo "$env_file" "$db_dump"
 }
 
+# Setup database
 setup_database() {
     log "=== CONFLICT RESOLUTION: Dropping existing database ==="
     log_warning "This will DELETE the existing '$DB_NAME' database and all its data!"
     
-    # Set password for psql commands
     export PGPASSWORD="$DB_PASSWORD"
     
-    # Check if database exists
     if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
         log_warning "Database '$DB_NAME' exists - dropping..."
         if dropdb -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" "$DB_NAME"; then
@@ -312,18 +294,16 @@ setup_database() {
     fi
 }
 
+# Import database
 import_database() {
     local db_dump="$1"
     
     log "=== Importing database dump into $DB_NAME ==="
     log_info "This may take a few minutes..."
     
-    # Set password for psql commands
     export PGPASSWORD="$DB_PASSWORD"
     
-    # Check file type and import accordingly
     if [[ "$db_dump" == *.sql ]]; then
-        # SQL dump
         if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$db_dump" >> "$LOG_FILE" 2>&1; then
             log_success "Database import completed successfully"
         else
@@ -331,7 +311,6 @@ import_database() {
             return 1
         fi
     elif [[ "$db_dump" == *.dump ]]; then
-        # PostgreSQL custom format dump
         if pg_restore -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" "$db_dump" >> "$LOG_FILE" 2>&1; then
             log_success "Database import completed successfully"
         else
@@ -343,12 +322,12 @@ import_database() {
         return 1
     fi
     
-    # Verify import
     local db_size
     db_size=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT pg_size_pretty(pg_database_size('$DB_NAME'));" 2>/dev/null || echo "unknown")
     log_info "Imported database size: $db_size"
 }
 
+# Restore .env file
 restore_env_file() {
     local env_file="$1"
     
@@ -356,7 +335,6 @@ restore_env_file() {
     
     local target_env="/home/$DB_USER/.env"
     
-    # Ensure target directory exists
     sudo mkdir -p "/home/$DB_USER"
     sudo chown "$DB_USER:$DB_USER" "/home/$DB_USER"
     
@@ -366,7 +344,6 @@ restore_env_file() {
         sudo chmod 600 "$target_env"
         log_success "Environment file restored successfully"
         
-        # Display first few lines for verification
         log_info "Environment file preview:"
         head -n 10 "$target_env" | while IFS= read -r line; do
             log_info "  $line"
@@ -377,13 +354,12 @@ restore_env_file() {
     fi
 }
 
+# Verify import
 verify_import() {
     log "=== Verifying import ==="
     
-    # Set password for psql commands
     export PGPASSWORD="$DB_PASSWORD"
     
-    # Check if database is accessible and has tables
     local table_count
     table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';" 2>/dev/null || echo "0")
     
@@ -393,7 +369,6 @@ verify_import() {
         log_warning "No tables found in database - import may have issues"
     fi
     
-    # Check if .env file exists and has content
     if sudo test -f "/home/$DB_USER/.env" && sudo test -s "/home/$DB_USER/.env"; then
         log_success "Environment file verified"
     else
@@ -401,17 +376,16 @@ verify_import() {
     fi
 }
 
+# Main function
 main() {
     log "=== SnailyCAD Self-Healing Database Import Script ==="
     log "Log file: $LOG_FILE"
     
-    # Initial setup
     if ! check_dependencies; then
         log_error "Dependency check failed"
         exit 1
     fi
     
-    # Find and extract backup FIRST to get the .env file
     local backup_archive
     backup_archive=$(find_backup_archive) || exit 1
     
@@ -424,19 +398,16 @@ main() {
         exit 1
     fi
     
-    # Locate backup files
     local backup_files
     backup_files=$(locate_backup_files) || exit 1
     
     read -r env_file db_dump <<< "$backup_files"
     
-    # NOW extract database credentials from the .env file
     if ! extract_db_credentials "$env_file"; then
         log_error "Failed to extract database credentials"
         exit 1
     fi
     
-    # Continue with setup using extracted credentials
     if ! setup_postgresql_auth; then
         log_error "PostgreSQL setup failed"
         exit 1
@@ -452,7 +423,6 @@ main() {
         exit 1
     fi
     
-    # Database operations
     if ! setup_database; then
         log_error "Database setup failed"
         exit 1
@@ -463,13 +433,11 @@ main() {
         exit 1
     fi
     
-    # Restore environment file
     if ! restore_env_file "$env_file"; then
         log_error "Environment file restoration failed"
         exit 1
     fi
     
-    # Final verification
     verify_import
     
     log_success "=== SnailyCAD import completed successfully ==="
@@ -479,5 +447,9 @@ main() {
     log "Check log file for details: $LOG_FILE"
 }
 
-# Run main function
+# Run main
 main "$@"
+SCRIPT_EOF
+
+# Make it executable
+chmod +x /home/import_snaily.sh

@@ -487,8 +487,10 @@ main() {
     fi
     
     # Locate backup files
-    local backup_files
-    if backup_files=$(locate_backup_files); then
+    local backup_files env_file db_dump
+    backup_files=$(locate_backup_files)
+    
+    if [[ -n "$backup_files" ]]; then
         IFS='|' read -r env_file db_dump <<< "$backup_files"
         
         # Now log what we found

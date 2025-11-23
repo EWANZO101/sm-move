@@ -12,7 +12,7 @@
 set -e  # Exit on errors (will be selectively disabled for self-healing)
 trap 'handle_error $? $LINENO' ERR
 
-DB_NAME="snaily_cadv4"        # Your DB name
+DB_NAME="snailycad"        # Your DB name
 DB_USER="snailycad"           # PostgreSQL user
 USER_HOME="/home/snailycad"
 IMPORT_DIR="/home"

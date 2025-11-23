@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# SnailyCAD Database Import Script - Authentication Fix
-# This version properly handles PostgreSQL authentication
+# SnailyCAD Database Import Script - Enhanced Error Handling
+# This version includes detailed diagnostics
 
 set -uo pipefail
 
@@ -27,28 +27,23 @@ DB_PORT=""
 
 # Logging functions
 log() {
-    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-    echo "[INFO] $1" >> "$LOG_FILE"
+    echo -e "${BLUE}[INFO]${NC} $1" | tee -a "$LOG_FILE"
 }
 
 log_success() {
-    echo -e "${GREEN}✓${NC} $1"
-    echo "[SUCCESS] $1" >> "$LOG_FILE"
+    echo -e "${GREEN}✓${NC} $1" | tee -a "$LOG_FILE"
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-    echo "[WARNING] $1" >> "$LOG_FILE"
+    echo -e "${YELLOW}[WARNING]${NC} $1" | tee -a "$LOG_FILE"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-    echo "[ERROR] $1" >> "$LOG_FILE"
+    echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"
 }
 
 # Cleanup function
@@ -159,51 +154,94 @@ create_snailycad_user() {
     return 0
 }
 
-# Setup database user
+# Setup database user with enhanced error handling
 setup_database_user() {
     log "Setting up database user: $DB_USER"
     
-    # Check if user exists and drop it for clean slate
-    if su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'\"" 2>/dev/null | grep -q 1; then
-        log_info "Database user exists, recreating for clean state..."
-        su - postgres -c "psql -c \"DROP USER IF EXISTS \\\"$DB_USER\\\";\"" >/dev/null 2>&1 || true
-        log_info "Dropped existing user"
+    # First, let's check if we can connect as postgres
+    log_info "Testing postgres connection..."
+    if ! su - postgres -c "psql -c 'SELECT version();'" &>/dev/null; then
+        log_error "Cannot connect to PostgreSQL as postgres user"
+        return 1
+    fi
+    log_success "PostgreSQL connection OK"
+    
+    # Check if user exists
+    log_info "Checking if user exists..."
+    local user_exists
+    user_exists=$(su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'\"" 2>/dev/null || echo "")
+    
+    if [[ "$user_exists" == "1" ]]; then
+        log_info "User exists, dropping..."
+        
+        # Terminate any connections from this user
+        su - postgres -c "psql -c \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='$DB_USER';\"" &>/dev/null || true
+        
+        # Try to drop user - if it fails, it might own objects
+        if ! su - postgres -c "psql -c \"DROP USER IF EXISTS \\\"$DB_USER\\\";\"" 2>&1 | tee -a "$LOG_FILE"; then
+            log_warning "User might own database objects, trying to reassign..."
+            
+            # List databases owned by user
+            su - postgres -c "psql -c \"SELECT datname FROM pg_database WHERE datdba=(SELECT oid FROM pg_roles WHERE rolname='$DB_USER');\"" 2>&1 | tee -a "$LOG_FILE"
+            
+            # Reassign ownership and drop
+            su - postgres -c "psql -c \"REASSIGN OWNED BY \\\"$DB_USER\\\" TO postgres; DROP OWNED BY \\\"$DB_USER\\\"; DROP USER IF EXISTS \\\"$DB_USER\\\";\"" 2>&1 | tee -a "$LOG_FILE"
+        fi
+        log_success "User dropped"
+    else
+        log_info "User doesn't exist yet"
     fi
     
-    # Create user with proper privileges
-    log "Creating database user with password..."
+    # Now create the user
+    log "Creating database user..."
     
-    # Escape single quotes in password for SQL
-    local sql_password="${DB_PASSWORD//\'/\'\'}"
+    # Escape password for SQL (replace ' with '')
+    local safe_password="${DB_PASSWORD//\'/\'\'}"
     
-    if su - postgres -c "psql -c \"CREATE USER \\\"$DB_USER\\\" WITH PASSWORD '$sql_password' CREATEDB CREATEROLE LOGIN;\"" 2>/dev/null; then
+    # Create user using heredoc to avoid quoting issues
+    local create_sql="CREATE USER \"${DB_USER}\" WITH PASSWORD '${safe_password}' CREATEDB CREATEROLE LOGIN;"
+    
+    log_info "Executing: CREATE USER \"${DB_USER}\" WITH PASSWORD '[HIDDEN]' CREATEDB CREATEROLE LOGIN;"
+    
+    if su - postgres -c "psql -c \"$create_sql\"" 2>&1 | tee -a "$LOG_FILE"; then
         log_success "Database user created"
     else
-        log_error "Failed to create database user"
+        log_error "Failed to create database user - see log above"
         return 1
     fi
     
-    # Grant necessary permissions
-    su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE postgres TO \\\"$DB_USER\\\";\"" 2>/dev/null || true
+    # Verify user was created
+    log_info "Verifying user creation..."
+    local verify
+    verify=$(su - postgres -c "psql -tAc \"SELECT rolname, rolcanlogin, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname='$DB_USER';\"" 2>/dev/null)
+    
+    if [[ -n "$verify" ]]; then
+        log_success "User verified: $verify"
+    else
+        log_error "User not found after creation"
+        return 1
+    fi
+    
+    # Grant privileges
+    log_info "Granting privileges..."
+    su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE postgres TO \\\"$DB_USER\\\";\"" 2>&1 | tee -a "$LOG_FILE"
     
     # Test authentication
-    log "Testing database authentication..."
+    log "Testing authentication..."
     export PGPASSWORD="$DB_PASSWORD"
     
-    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres -c "SELECT 1;" >/dev/null 2>&1; then
-        log_success "✓ Authentication test PASSED"
+    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres -c "SELECT 'Authentication successful!' as test;" 2>&1 | tee -a "$LOG_FILE"; then
+        log_success "✓ Authentication PASSED"
         return 0
     else
-        log_error "✗ Authentication test FAILED"
-        log_info "Debugging authentication issue..."
+        log_error "✗ Authentication FAILED"
+        log_info "Testing with alternative methods..."
         
-        # Show what postgres thinks about this user
-        su - postgres -c "psql -c \"SELECT rolname, rolcanlogin, rolcreatedb FROM pg_roles WHERE rolname='$DB_USER';\"" 2>/dev/null || true
-        
-        log_error "Please check:"
-        log_error "  1. Password in .env matches: ${DB_PASSWORD:0:5}..."
-        log_error "  2. PostgreSQL is accepting connections"
-        log_error "  3. pg_hba.conf allows md5 authentication"
+        # Try without host specification (local socket)
+        log_info "Trying local socket connection..."
+        if psql -U "$DB_USER" -d postgres -c "SELECT 1;" 2>&1 | tee -a "$LOG_FILE"; then
+            log_warning "Local socket works but TCP doesn't"
+        fi
         
         return 1
     fi
@@ -241,7 +279,7 @@ check_dependencies() {
     return 0
 }
 
-# Find backup archive - write result to temp file
+# Find backup archive
 find_backup_archive() {
     local backup_files=()
     
@@ -293,7 +331,7 @@ extract_backup_archive() {
     fi
 }
 
-# Locate backup files - write to temp file
+# Locate backup files
 locate_backup_files() {
     local env_file db_dump
     
@@ -320,11 +358,11 @@ setup_database() {
     fi
     
     log "Creating database: $DB_NAME"
-    if su - postgres -c "createdb -O \"$DB_USER\" \"$DB_NAME\"" 2>/dev/null; then
+    if su - postgres -c "createdb -O \"$DB_USER\" \"$DB_NAME\"" 2>&1 | tee -a "$LOG_FILE"; then
         log_success "Database created"
         
         # Grant all privileges
-        su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE \\\"$DB_NAME\\\" TO \\\"$DB_USER\\\";\"" 2>/dev/null || true
+        su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE \\\"$DB_NAME\\\" TO \\\"$DB_USER\\\";\"" 2>&1 | tee -a "$LOG_FILE"
         
         return 0
     else
@@ -344,18 +382,18 @@ import_database() {
     
     if [[ "$db_dump" == *.sql ]]; then
         log "Importing SQL dump..."
-        if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$db_dump" >>"$LOG_FILE" 2>&1; then
+        if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$db_dump" 2>&1 | tee -a "$LOG_FILE"; then
             log_success "Import completed"
         else
-            log_error "Import failed - check: $LOG_FILE"
+            log_error "Import failed - check log above"
             return 1
         fi
     elif [[ "$db_dump" == *.dump ]]; then
         log "Restoring binary dump..."
-        if pg_restore -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" "$db_dump" >>"$LOG_FILE" 2>&1; then
+        if pg_restore -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" "$db_dump" 2>&1 | tee -a "$LOG_FILE"; then
             log_success "Restore completed"
         else
-            log_error "Restore failed - check: $LOG_FILE"
+            log_error "Restore failed - check log above"
             return 1
         fi
     else
@@ -426,7 +464,7 @@ verify_import() {
 main() {
     echo ""
     log "==================================================================="
-    log "    SnailyCAD Database Import - AUTHENTICATION FIX"
+    log "    SnailyCAD Database Import - ENHANCED DIAGNOSTICS"
     log "==================================================================="
     log "Log: $LOG_FILE"
     log_info "Running as: $(whoami)"
@@ -473,13 +511,14 @@ main() {
         exit 1
     fi
     
-    # Setup - THIS IS THE CRITICAL PART
+    # Setup
     setup_postgresql_auth
     create_snailycad_user
     
-    # THIS IS WHERE THE FIX IS - proper user setup with authentication test
+    # THIS IS THE CRITICAL PART with enhanced diagnostics
     if ! setup_database_user; then
         log_error "Database user setup failed - cannot continue"
+        log_info "Check the detailed output above for errors"
         exit 1
     fi
     
@@ -510,8 +549,8 @@ main() {
     log "Log: $LOG_FILE"
     echo ""
     log "Next steps:"
-    log "  1. Verify connection: PGPASSWORD='$DB_PASSWORD' psql -h $DB_HOST -U $DB_USER -d $DB_NAME"
-    log "  2. Test application startup"
+    log "  1. Test connection: PGPASSWORD='...' psql -h $DB_HOST -U $DB_USER -d $DB_NAME"
+    log "  2. Start your application"
     echo ""
     log "==================================================================="
     echo ""

@@ -54,22 +54,22 @@ cleanup() {
 
 trap cleanup EXIT
 
-# Check if running as root
-check_root() {
+# Check if running with appropriate privileges
+check_privileges() {
     if [[ $EUID -eq 0 ]]; then
-        log_error "This script should not be run as root. Run as a regular user with sudo access."
-        exit 1
-    fi
-    
-    if ! sudo -n true 2>/dev/null; then
-        log_info "This script requires sudo access. You may be prompted for your password."
-        if ! sudo true; then
-            log_error "Failed to obtain sudo access"
-            exit 1
+        log_info "Running as root user"
+    else
+        if ! sudo -n true 2>/dev/null; then
+            log_info "This script requires sudo access. You may be prompted for your password."
+            if ! sudo true; then
+                log_error "Failed to obtain sudo access"
+                exit 1
+            fi
         fi
+        log_info "Running with sudo privileges"
     fi
     
-    log_success "Running with appropriate privileges"
+    log_success "Privilege check passed"
 }
 
 # Extract database credentials from .env file
@@ -133,19 +133,19 @@ setup_postgresql_auth() {
     log_info "Found PostgreSQL config: $pg_hba_file"
     
     # Backup original config
-    if ! sudo test -f "$pg_hba_file.backup"; then
-        sudo cp "$pg_hba_file" "$pg_hba_file.backup"
+    if [[ ! -f "$pg_hba_file.backup" ]]; then
+        cp "$pg_hba_file" "$pg_hba_file.backup"
         log_success "Created backup of pg_hba.conf"
     fi
     
     # Update authentication method from peer to md5 for local connections
-    if sudo grep -q "^local.*all.*all.*peer" "$pg_hba_file"; then
-        sudo sed -i 's/^local\s\+all\s\+all\s\+peer/local   all             all                                     md5/' "$pg_hba_file"
+    if grep -q "^local.*all.*all.*peer" "$pg_hba_file"; then
+        sed -i 's/^local\s\+all\s\+all\s\+peer/local   all             all                                     md5/' "$pg_hba_file"
         log_success "Updated PostgreSQL authentication to use md5"
         
         # Restart PostgreSQL
         log "Restarting PostgreSQL service..."
-        if sudo systemctl restart postgresql; then
+        if systemctl restart postgresql; then
             log_success "PostgreSQL restarted successfully"
             sleep 2  # Give PostgreSQL time to start
         else
@@ -167,7 +167,7 @@ create_snailycad_user() {
         log_info "System user '$DB_USER' already exists"
     else
         log "Creating system user: $DB_USER"
-        if sudo useradd -m -s /bin/bash "$DB_USER" 2>/dev/null; then
+        if useradd -m -s /bin/bash "$DB_USER" 2>/dev/null; then
             log_success "Created system user: $DB_USER"
         else
             log_error "Failed to create system user: $DB_USER"
@@ -176,12 +176,12 @@ create_snailycad_user() {
     fi
     
     # Ensure home directory exists with correct permissions
-    if ! sudo test -d "/home/$DB_USER"; then
-        sudo mkdir -p "/home/$DB_USER"
+    if [[ ! -d "/home/$DB_USER" ]]; then
+        mkdir -p "/home/$DB_USER"
     fi
     
-    sudo chown "$DB_USER:$DB_USER" "/home/$DB_USER"
-    sudo chmod 755 "/home/$DB_USER"
+    chown "$DB_USER:$DB_USER" "/home/$DB_USER"
+    chmod 755 "/home/$DB_USER"
     
     log_success "Home directory configured: /home/$DB_USER"
     return 0
@@ -192,18 +192,18 @@ setup_database_user() {
     log "Setting up PostgreSQL database user..."
     
     # Check if user exists
-    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null | grep -q 1; then
+    if su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'\"" 2>/dev/null | grep -q 1; then
         log_info "Database user '$DB_USER' already exists"
         
         # Update password
-        if sudo -u postgres psql -c "ALTER USER \"$DB_USER\" WITH PASSWORD '$DB_PASSWORD';" >/dev/null 2>&1; then
+        if su - postgres -c "psql -c \"ALTER USER \\\"$DB_USER\\\" WITH PASSWORD '$DB_PASSWORD';\"" >/dev/null 2>&1; then
             log_success "Updated password for database user: $DB_USER"
         else
             log_warning "Could not update password for database user"
         fi
     else
         log "Creating database user: $DB_USER"
-        if sudo -u postgres psql -c "CREATE USER \"$DB_USER\" WITH PASSWORD '$DB_PASSWORD' CREATEDB;" >/dev/null 2>&1; then
+        if su - postgres -c "psql -c \"CREATE USER \\\"$DB_USER\\\" WITH PASSWORD '$DB_PASSWORD' CREATEDB;\"" >/dev/null 2>&1; then
             log_success "Created database user: $DB_USER"
         else
             log_error "Failed to create database user: $DB_USER"
@@ -232,8 +232,8 @@ check_dependencies() {
         
         if command -v apt-get &>/dev/null; then
             log "Installing PostgreSQL and required packages..."
-            sudo apt-get update -qq
-            sudo apt-get install -y postgresql postgresql-contrib tar gzip
+            apt-get update -qq
+            apt-get install -y postgresql postgresql-contrib tar gzip
             log_success "Dependencies installed"
         else
             log_error "Cannot automatically install dependencies. Please install PostgreSQL manually."
@@ -244,11 +244,11 @@ check_dependencies() {
     fi
     
     # Ensure PostgreSQL is running
-    if sudo systemctl is-active --quiet postgresql; then
+    if systemctl is-active --quiet postgresql; then
         log_success "PostgreSQL service is running"
     else
         log "Starting PostgreSQL service..."
-        sudo systemctl start postgresql
+        systemctl start postgresql
         sleep 2
         log_success "PostgreSQL service started"
     fi
@@ -353,7 +353,7 @@ setup_database() {
     export PGPASSWORD="$DB_PASSWORD"
     
     # Check if database exists
-    if sudo -u postgres psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
+    if su - postgres -c "psql -lqt" 2>/dev/null | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
         log_warning "Database '$DB_NAME' already exists"
         
         echo ""
@@ -366,7 +366,7 @@ setup_database() {
         fi
         
         log_warning "Dropping existing database: $DB_NAME"
-        if sudo -u postgres dropdb "$DB_NAME" 2>/dev/null; then
+        if su - postgres -c "dropdb \"$DB_NAME\"" 2>/dev/null; then
             log_success "Dropped existing database"
         else
             log_error "Failed to drop database"
@@ -376,7 +376,7 @@ setup_database() {
     
     # Create fresh database
     log "Creating database: $DB_NAME"
-    if sudo -u postgres createdb -O "$DB_USER" "$DB_NAME" 2>/dev/null; then
+    if su - postgres -c "createdb -O \"$DB_USER\" \"$DB_NAME\"" 2>/dev/null; then
         log_success "Database created successfully"
         return 0
     else
@@ -434,19 +434,19 @@ restore_env_file() {
     local target_env="$target_dir/.env"
     
     # Ensure directory exists
-    sudo mkdir -p "$target_dir"
-    sudo chown "$DB_USER:$DB_USER" "$target_dir"
+    mkdir -p "$target_dir"
+    chown "$DB_USER:$DB_USER" "$target_dir"
     
     # Copy .env file
     log "Copying .env file to $target_env"
-    if sudo cp "$env_file" "$target_env"; then
-        sudo chown "$DB_USER:$DB_USER" "$target_env"
-        sudo chmod 600 "$target_env"
+    if cp "$env_file" "$target_env"; then
+        chown "$DB_USER:$DB_USER" "$target_env"
+        chmod 600 "$target_env"
         log_success "Environment file restored successfully"
         
         # Show preview (first 10 lines, hiding passwords)
         log_info "Environment file preview:"
-        sudo head -n 10 "$target_env" | while IFS= read -r line; do
+        head -n 10 "$target_env" | while IFS= read -r line; do
             if [[ "$line" =~ PASSWORD ]]; then
                 log_info "  $(echo "$line" | sed 's/=.*/=[hidden]/')"
             else
@@ -484,7 +484,7 @@ verify_import() {
     fi
     
     # Check environment file
-    if sudo test -f "/home/$DB_USER/.env" && sudo test -s "/home/$DB_USER/.env"; then
+    if [[ -f "/home/$DB_USER/.env" && -s "/home/$DB_USER/.env" ]]; then
         log_success "Environment file verified"
     else
         log_warning "Environment file missing or empty"
@@ -503,7 +503,7 @@ main() {
     echo ""
     
     # Check prerequisites
-    check_root || exit 1
+    check_privileges || exit 1
     check_dependencies || exit 1
     
     # Find and extract backup

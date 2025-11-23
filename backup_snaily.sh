@@ -2,14 +2,14 @@
 set -e
 
 ### ============================================
-###  SNAILYCAD V4 PATHS
+###  SNAILYCAD V4 COMPLETE BACKUP SCRIPT
 ### ============================================
-echo "=== SnailyCAD v4 Backup Script ==="
+echo "=== SnailyCAD v4 Complete Backup Script ==="
 
+# Configuration
 SNAILYCAD_DIR="/home/snaily-cadv4"
 ENV_FILE="$SNAILYCAD_DIR/.env"
 BACKUP_DIR="$SNAILYCAD_DIR/backups"
-
 RETENTION_DAYS=7
 REMOTE_USER="root"
 REMOTE_DIR="/home"
@@ -24,7 +24,6 @@ echo ""
 echo "=== Ensuring backup directory exists ==="
 mkdir -p "$BACKUP_DIR"
 chmod 755 "$BACKUP_DIR"
-
 echo "Backup directory ready."
 echo ""
 
@@ -43,7 +42,7 @@ done
 # Auto-install sshpass if missing
 if ! command -v sshpass >/dev/null 2>&1; then
     echo "sshpass is missing. Installing…"
-
+    
     if command -v apt-get >/dev/null 2>&1; then
         apt-get update && apt-get install -y sshpass
     elif command -v yum >/dev/null 2>&1; then
@@ -133,39 +132,35 @@ SIZE_REPORT="$BACKUP_DIR/db_size_report_$TS.txt"
 ARCHIVE="$BACKUP_DIR/snaily_backup_$TS.tar.gz"
 
 ### ============================================
-### DATABASE SIZE REPORT
+### DATABASE SIZE REPORT (FIXED VERSION)
 ### ============================================
 echo "=== Generating size report ==="
 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "
-SELECT table_name,
-       pg_size_pretty(total_bytes) AS total_size,
-       pg_size_pretty(index_bytes) AS index_size,
-       pg_size_pretty(toast_bytes) AS toast_size,
-       pg_size_pretty(table_bytes) AS table_size
-FROM (
-    SELECT *, total_bytes-index_bytes-COALESCE(toast_bytes,0) AS table_bytes
-    FROM (
-        SELECT relname AS table_name,
-               pg_total_relation_size(relid) AS total_bytes,
-               pg_indexes_size(relid) AS index_bytes,
-               pg_total_relation_size(reltoastrelid) AS toast_bytes
-        FROM pg_catalog.pg_statio_user_tables
-    ) AS x
-) AS y
-ORDER BY total_bytes DESC;
+SELECT 
+    schemaname || '.' || tablename AS table_name,
+    pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) AS total_size,
+    pg_size_pretty(pg_relation_size(schemaname || '.' || tablename)) AS table_size,
+    pg_size_pretty(pg_indexes_size(schemaname || '.' || tablename)) AS index_size
+FROM pg_tables 
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY pg_total_relation_size(schemaname || '.' || tablename) DESC;
 " > "$SIZE_REPORT"
+
+echo "Size report generated: $SIZE_REPORT"
 
 ### ============================================
 ### DATABASE BACKUP
 ### ============================================
 echo "=== Backing up database ==="
 pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" "$DB_NAME" -f "$DB_BACKUP"
+echo "Database backup created: $DB_BACKUP"
 
 ### ============================================
 ### ENV BACKUP
 ### ============================================
 echo "=== Backing up .env ==="
 cp "$ENV_FILE" "$ENV_BACKUP"
+echo "Env backup created: $ENV_BACKUP"
 
 ### ============================================
 ### CREATE ARCHIVE
@@ -176,30 +171,43 @@ tar -czf "$ARCHIVE" -C "$BACKUP_DIR" \
     "$(basename "$ENV_BACKUP")" \
     "$(basename "$SIZE_REPORT")"
 
+echo "Archive created: $ARCHIVE"
+
 ### ============================================
 ### CLEAN TEMP FILES
 ### ============================================
 rm -f "$DB_BACKUP" "$ENV_BACKUP" "$SIZE_REPORT"
+echo "Temporary files cleaned"
 
 # Unset password from environment
 unset PGPASSWORD
-
-echo "Local backup created: $ARCHIVE"
 
 ### ============================================
 ### SCP TRANSFER
 ### ============================================
 echo "=== Transferring to remote server ==="
-sshpass -p "$REMOTE_PASS" scp "$ARCHIVE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR"
-
-echo "Backup transferred to: $REMOTE_HOST"
+if sshpass -p "$REMOTE_PASS" scp -o StrictHostKeyChecking=no "$ARCHIVE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR"; then
+    echo "Backup transferred successfully to: $REMOTE_HOST:$REMOTE_DIR"
+else
+    echo "ERROR: Failed to transfer backup to remote server"
+    exit 1
+fi
 
 ### ============================================
 ### CLEAN OLD BACKUPS
 ### ============================================
 echo "=== Cleaning backups older than $RETENTION_DAYS days ==="
 find "$BACKUP_DIR" -name "snaily_backup_*.tar.gz" -mtime +$RETENTION_DAYS -delete
+echo "Old backups cleaned"
 
+### ============================================
+### BACKUP COMPLETE
+### ============================================
+echo ""
 echo "=== BACKUP COMPLETE ==="
 echo "Backup archive: $(basename "$ARCHIVE")"
-echo "Location: $BACKUP_DIR"
+echo "Local location: $BACKUP_DIR"
+echo "Remote location: $REMOTE_HOST:$REMOTE_DIR"
+echo "File size: $(du -h "$ARCHIVE" | cut -f1)"
+echo "Timestamp: $(date)"
+echo "================================"

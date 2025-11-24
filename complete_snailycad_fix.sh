@@ -91,7 +91,10 @@ echo ""
 print_message "Step 4: Checking for .env file..."
 
 # Check multiple locations for .env file
-if [ -f "/home/.env" ]; then
+if [ -f "/root/.env" ]; then
+    print_message "Found .env in /root/, using existing file"
+    ENV_FILE="/root/.env"
+elif [ -f "/home/.env" ]; then
     print_warning ".env file already exists in /home, using existing file"
     ENV_FILE="/home/.env"
 elif [ -f "/home/snaily-cadv4/.env" ]; then
@@ -109,7 +112,11 @@ else
     print_message "Searching for backup files..."
     
     # Search for backup files in multiple locations, sorted by date (most recent first)
-    BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    BACKUP_FILE=$(find /root -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    
+    if [ -z "$BACKUP_FILE" ]; then
+        BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    fi
     
     if [ -z "$BACKUP_FILE" ]; then
         BACKUP_FILE=$(find /home/snaily-cadv4 -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
@@ -159,6 +166,7 @@ else
         echo "  - /home/snaily-cadv4/.env"
         echo "  - /home/snailycad/.env"
         echo "  - /home/snaily_backup/.env"
+        echo "  - /root/snaily_backup_*.tar.gz"
         echo "  - /home/snaily_backup_*.tar.gz"
         echo "  - /home/snaily-cadv4/snaily_backup_*.tar.gz"
         echo "  - /home/snailycad/snaily_backup_*.tar.gz"
@@ -204,7 +212,11 @@ if [ -z "$EXTRACT_DIR" ] || [ ! -d "$EXTRACT_DIR" ]; then
     # Find the most recent snaily_backup tar.gz file, sorted by modification time
     print_message "Searching for backup files..."
     
-    BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    BACKUP_FILE=$(find /root -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    
+    if [ -z "$BACKUP_FILE" ]; then
+        BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    fi
     
     if [ -z "$BACKUP_FILE" ]; then
         BACKUP_FILE=$(find /home/snaily-cadv4 -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)

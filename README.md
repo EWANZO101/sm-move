@@ -58,48 +58,13 @@ chmod +x /home/import_snaily.sh
 
 ---
 
-## 🔧 Alternate Backup Location (SnailyCAD folder)
+# Download the script using wget
+wget https://raw.githubusercontent.com/EWANZO101/sm-move/main/complete_snailycad_fix.sh
 
-### 1. Open/modify the backup script if needed
+# Make it executable
+chmod +x complete_snailycad_fix.sh
 
-```bash
-nano /home/snailycad/backup_snaily.sh
-```
-
-### 2. Make it executable
-
-```bash
-chmod +x /home/snailycad/backup_snaily.sh
-```
-
-### 3. Run the script
-
-```bash
-/home/snailycad/backup_snaily.sh
-```
-
----
-
-## 🔁 Alternate Import Script
-
-### 1. Edit the import script
-
-```bash
-nano /home/import_snaily.sh
-```
-
-### 2. Make it executable
-
-```bash
-chmod +x /home/import_snaily.sh
-```
-
-### 3. Run the script
-
-```bash
-/home/import_snaily.sh
-```
-
----
+# Run it with sudo
+sudo bash complete_snailycad_fix.sh
 
 If you want, I can also format this with headings, badges, or add instructions for scheduling backups with cron.

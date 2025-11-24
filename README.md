@@ -27,8 +27,13 @@ chmod +x /home/backup_snaily.sh
 ```bash
 /home/backup_snaily.sh
 ```
+##########################################################
 sudo systemctl stop start-snaily-cadv4.service
 
+
+pm2 stop all
+
+#################################################################
 ---
 
 ## 📥 Import Script (Primary Method)

@@ -106,17 +106,22 @@ elif [ -f "/home/snaily_backup/.env" ]; then
 else
     # No .env found, search for backup tar.gz files
     print_warning ".env file not found in standard locations"
-    print_message "Searching for backup files in /home and /home/snaily-cadv4/..."
+    print_message "Searching for backup files..."
     
-    # Search for backup files in both locations
-    BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f 2>/dev/null | sort -r | head -1)
+    # Search for backup files in multiple locations, sorted by date (most recent first)
+    BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     
     if [ -z "$BACKUP_FILE" ]; then
-        BACKUP_FILE=$(find /home/snaily-cadv4 -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f 2>/dev/null | sort -r | head -1)
+        BACKUP_FILE=$(find /home/snaily-cadv4 -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    fi
+    
+    if [ -z "$BACKUP_FILE" ]; then
+        BACKUP_FILE=$(find /home/snailycad -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     fi
     
     if [ -n "$BACKUP_FILE" ]; then
-        print_message "Found backup file: $BACKUP_FILE"
+        print_message "Found backup file: $(basename $BACKUP_FILE)"
+        print_message "Location: $BACKUP_FILE"
         print_message "Extracting .env from backup..."
         
         # Create temporary extraction directory
@@ -156,6 +161,7 @@ else
         echo "  - /home/snaily_backup/.env"
         echo "  - /home/snaily_backup_*.tar.gz"
         echo "  - /home/snaily-cadv4/snaily_backup_*.tar.gz"
+        echo "  - /home/snailycad/snaily_backup_*.tar.gz"
         echo ""
         print_message "Please specify the .env file location:"
         read -p "Enter full path to .env file: " ENV_FILE
@@ -195,15 +201,22 @@ print_message "Step 4.5: Checking for backup SQL dump..."
 
 # If we already extracted a backup above, use that
 if [ -z "$EXTRACT_DIR" ] || [ ! -d "$EXTRACT_DIR" ]; then
-    # Find the most recent snaily_backup tar.gz file in both locations
-    BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f 2>/dev/null | sort -r | head -1)
+    # Find the most recent snaily_backup tar.gz file, sorted by modification time
+    print_message "Searching for backup files..."
+    
+    BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     
     if [ -z "$BACKUP_FILE" ]; then
-        BACKUP_FILE=$(find /home/snaily-cadv4 -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f 2>/dev/null | sort -r | head -1)
+        BACKUP_FILE=$(find /home/snaily-cadv4 -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    fi
+    
+    if [ -z "$BACKUP_FILE" ]; then
+        BACKUP_FILE=$(find /home/snailycad -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     fi
     
     if [ -n "$BACKUP_FILE" ]; then
-        print_message "Found backup file: $BACKUP_FILE"
+        print_message "Found backup file: $(basename $BACKUP_FILE)"
+        print_message "Location: $BACKUP_FILE"
         
         # Create temporary extraction directory
         EXTRACT_DIR="/tmp/snaily_restore_$$"

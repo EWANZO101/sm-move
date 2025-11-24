@@ -872,6 +872,50 @@ main() {
     # Verify
     verify_import
     
+    # Final emergency check - if Prisma test failed, try emergency fix
+    export PGPASSWORD="$DB_PASSWORD"
+    if ! psql -h localhost -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" &>/dev/null; then
+        log_warning "Prisma connection still failing after import"
+        log "=== TRIGGERING EMERGENCY PASSWORD FIX ==="
+        
+        # Download and run emergency fix
+        local emergency_script="/tmp/emergency_password_fix_$$.sh"
+        
+        log_info "Downloading emergency fix from GitHub..."
+        if curl -fsSL "https://raw.githubusercontent.com/EWANZO101/sm-move/main/emergency_password_fix.sh" -o "$emergency_script" 2>&1 | tee -a "$LOG_FILE"; then
+            log_success "Downloaded emergency fix"
+            chmod +x "$emergency_script"
+            
+            log_info "Running emergency authentication fix..."
+            # Run with credentials as arguments
+            if bash "$emergency_script" --auto "$DB_USER" "$DB_NAME" "$DB_PASSWORD" 2>&1 | tee -a "$LOG_FILE"; then
+                log_success "Emergency fix completed"
+                rm -f "$emergency_script"
+            else
+                log_warning "Emergency fix had issues, but may have helped"
+                rm -f "$emergency_script"
+            fi
+        else
+            log_warning "Could not download emergency fix from GitHub"
+            log_info "Trying wget as fallback..."
+            
+            if wget -q "https://raw.githubusercontent.com/EWANZO101/sm-move/main/emergency_password_fix.sh" -O "$emergency_script" 2>&1 | tee -a "$LOG_FILE"; then
+                log_success "Downloaded via wget"
+                chmod +x "$emergency_script"
+                
+                if bash "$emergency_script" --auto "$DB_USER" "$DB_NAME" "$DB_PASSWORD" 2>&1 | tee -a "$LOG_FILE"; then
+                    log_success "Emergency fix completed"
+                else
+                    log_warning "Emergency fix had issues"
+                fi
+                rm -f "$emergency_script"
+            else
+                log_warning "Could not download emergency fix"
+                log_info "Check your internet connection or manually run emergency_password_fix.sh"
+            fi
+        fi
+    fi
+    
     # Success
     echo ""
     log "==================================================================="

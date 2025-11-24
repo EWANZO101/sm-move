@@ -3,7 +3,7 @@
 # PostgreSQL Reinstall and Configuration Script
 # This script removes PostgreSQL, reinstalls it, and configures it using .env file
 
-set -e  # Exit on any error
+# Note: Not using 'set -e' to allow graceful error handling
 
 echo "=== PostgreSQL Reinstall and Configuration Script ==="
 echo ""
@@ -126,16 +126,24 @@ else
         # Extract the backup
         tar -xzf "$BACKUP_FILE" -C "$EXTRACT_DIR" 2>/dev/null
         
-        # Look for .env file in extracted contents
+        # Look for .env file in extracted contents (can be named .env or env_backup_*)
         BACKUP_ENV=$(find "$EXTRACT_DIR" -name ".env" -type f | head -1)
         
+        if [ -z "$BACKUP_ENV" ]; then
+            # Look for env_backup_* files
+            BACKUP_ENV=$(find "$EXTRACT_DIR" -name "env_backup_*" -type f | head -1)
+        fi
+        
         if [ -n "$BACKUP_ENV" ]; then
-            print_message "Found .env in backup, copying to /home/.env"
+            print_message "Found env file in backup: $(basename $BACKUP_ENV)"
+            print_message "Copying to /home/.env"
             cp "$BACKUP_ENV" /home/.env
             ENV_FILE="/home/.env"
             print_message ".env file extracted successfully from backup"
         else
             print_error ".env file not found in backup"
+            print_message "Backup contents:"
+            tar -tzf "$BACKUP_FILE"
             rm -rf "$EXTRACT_DIR"
             exit 1
         fi
@@ -208,13 +216,21 @@ fi
 
 # Look for SQL dump in extracted backup
 if [ -d "$EXTRACT_DIR" ]; then
-    SQL_DUMP=$(find "$EXTRACT_DIR" -name "*.sql" -type f | head -1)
+    # Look for db_backup_*.sql files first (most specific)
+    SQL_DUMP=$(find "$EXTRACT_DIR" -name "db_backup_*.sql" -type f | head -1)
+    
+    # If not found, look for any .sql file
+    if [ -z "$SQL_DUMP" ]; then
+        SQL_DUMP=$(find "$EXTRACT_DIR" -name "*.sql" -type f | head -1)
+    fi
     
     if [ -n "$SQL_DUMP" ]; then
         print_message "Found SQL dump: $(basename $SQL_DUMP)"
         IMPORT_SQL="yes"
     else
         print_warning "No SQL dump found in backup file"
+        print_message "Extracted backup contents:"
+        ls -lah "$EXTRACT_DIR"
         IMPORT_SQL="no"
     fi
 else
@@ -272,17 +288,32 @@ echo ""
 # Step 9: Import database from backup if available
 if [ "$IMPORT_SQL" = "yes" ] && [ -n "$SQL_DUMP" ]; then
     print_message "Step 9: Importing database from backup..."
+    print_message "SQL file: $(basename $SQL_DUMP)"
     print_message "This may take several minutes depending on database size..."
+    echo ""
     
     # Set password for psql connection
     export PGPASSWORD="$DB_PASSWORD"
     
-    # Import the SQL dump
-    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" < "$SQL_DUMP" 2>/dev/null; then
+    # Import the SQL dump with verbose output
+    print_message "Starting import..."
+    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$SQL_DUMP" 2>&1 | tee /tmp/psql_import.log; then
         print_message "Database imported successfully from backup!"
     else
-        print_warning "Database import encountered some issues, but may have partially succeeded"
-        print_message "You may need to review the database manually"
+        EXIT_CODE=$?
+        print_warning "Database import encountered issues (exit code: $EXIT_CODE)"
+        print_message "Checking if data was imported..."
+        
+        # Check if any tables were created
+        TABLE_COUNT=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null || echo "0")
+        
+        if [ "$TABLE_COUNT" -gt 0 ]; then
+            print_message "Found $TABLE_COUNT tables - import appears partially successful"
+            print_warning "Check the import log at /tmp/psql_import.log for details"
+        else
+            print_error "No tables found - import may have failed"
+            print_message "Import log saved to: /tmp/psql_import.log"
+        fi
     fi
     
     # Cleanup
@@ -295,7 +326,7 @@ if [ "$IMPORT_SQL" = "yes" ] && [ -n "$SQL_DUMP" ]; then
     fi
     echo ""
 else
-    print_message "Step 9: Skipping database import (no backup file found)"
+    print_message "Step 9: Skipping database import (no backup SQL file found)"
     echo ""
 fi
 

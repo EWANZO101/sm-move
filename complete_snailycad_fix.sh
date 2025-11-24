@@ -139,6 +139,60 @@ echo "  Database: $DB_NAME"
 echo "  User: $DB_USER"
 echo ""
 
+# Step 4.5: Check for and extract backup file
+print_message "Step 4.5: Checking for backup files in /home/snaily-cadv4/..."
+
+# Find the most recent snaily_backup tar.gz file
+BACKUP_FILE=$(ls -t /home/snaily-cadv4/snaily_backup_*.tar.gz 2>/dev/null | head -1)
+
+if [ -n "$BACKUP_FILE" ]; then
+    print_message "Found backup file: $BACKUP_FILE"
+    
+    # Create temporary extraction directory
+    EXTRACT_DIR="/tmp/snaily_restore_$$"
+    mkdir -p "$EXTRACT_DIR"
+    
+    print_message "Extracting backup file..."
+    tar -xzf "$BACKUP_FILE" -C "$EXTRACT_DIR"
+    
+    if [ $? -eq 0 ]; then
+        print_message "Backup extracted successfully to $EXTRACT_DIR"
+        
+        # Look for SQL dump file in extracted contents
+        SQL_DUMP=$(find "$EXTRACT_DIR" -name "*.sql" -type f | head -1)
+        
+        if [ -n "$SQL_DUMP" ]; then
+            print_message "Found SQL dump: $SQL_DUMP"
+            IMPORT_SQL="yes"
+        else
+            print_warning "No SQL dump found in backup file"
+            IMPORT_SQL="no"
+        fi
+        
+        # Check if there's a .env file in the backup
+        BACKUP_ENV=$(find "$EXTRACT_DIR" -name ".env" -type f | head -1)
+        if [ -n "$BACKUP_ENV" ] && [ -z "$ENV_FILE" ]; then
+            print_message "Found .env in backup, using it"
+            ENV_FILE="$BACKUP_ENV"
+            # Re-export variables from backup .env
+            export $(grep -v '^#' "$ENV_FILE" | xargs)
+            DB_HOST="${POSTGRES_HOST:-localhost}"
+            DB_PORT="${POSTGRES_PORT:-5432}"
+            DB_NAME="${POSTGRES_DB:-snailycad}"
+            DB_USER="${POSTGRES_USER:-postgres}"
+            DB_PASSWORD="${POSTGRES_PASSWORD}"
+        fi
+    else
+        print_error "Failed to extract backup file"
+        IMPORT_SQL="no"
+    fi
+else
+    print_warning "No backup file found in /home/snaily-cadv4/"
+    print_message "Continuing without backup import..."
+    IMPORT_SQL="no"
+fi
+echo ""
+
 # Step 5: Create database user (with self-healing)
 print_message "Step 5: Configuring database user '$DB_USER'..."
 
@@ -185,6 +239,36 @@ sudo -u postgres psql -d postgres -c "GRANT ALL PRIVILEGES ON DATABASE \"$DB_NAM
 print_message "Privileges granted"
 echo ""
 
+# Step 9: Import database from backup if available
+if [ "$IMPORT_SQL" = "yes" ] && [ -n "$SQL_DUMP" ]; then
+    print_message "Step 9: Importing database from backup..."
+    print_message "This may take several minutes depending on database size..."
+    
+    # Set password for psql connection
+    export PGPASSWORD="$DB_PASSWORD"
+    
+    # Import the SQL dump
+    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" < "$SQL_DUMP" 2>/dev/null; then
+        print_message "Database imported successfully from backup!"
+    else
+        print_warning "Database import encountered some issues, but may have partially succeeded"
+        print_message "You may need to review the database manually"
+    fi
+    
+    # Cleanup
+    unset PGPASSWORD
+    
+    # Remove temporary extraction directory
+    if [ -d "$EXTRACT_DIR" ]; then
+        print_message "Cleaning up temporary files..."
+        rm -rf "$EXTRACT_DIR"
+    fi
+    echo ""
+else
+    print_message "Step 9: Skipping database import (no backup file found)"
+    echo ""
+fi
+
 # Verify installation
 print_message "Verifying PostgreSQL setup..."
 sudo -u postgres psql -d postgres -c "\du" | grep "$DB_USER" && print_message "User verified" || print_error "User verification failed"
@@ -192,8 +276,13 @@ sudo -u postgres psql -d postgres -c "\l" | grep "$DB_NAME" && print_message "Da
 echo ""
 
 print_message "=== PostgreSQL Reinstall and Configuration Complete ==="
+if [ "$IMPORT_SQL" = "yes" ]; then
+    print_message "Database has been restored from backup: $(basename $BACKUP_FILE)"
+fi
 print_message "You can now connect using:"
 echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME"
 echo ""
-print_message "To import a database dump, use:"
-echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME < your_dump.sql"
+if [ "$IMPORT_SQL" != "yes" ]; then
+    print_message "To import a database dump manually, use:"
+    echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME < your_dump.sql"
+fi

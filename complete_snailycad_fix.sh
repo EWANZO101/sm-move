@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Complete SnailyCAD PostgreSQL Authentication Fix
-# This script will automatically fix all authentication issues
+# SnailyCAD Complete Auto-Fix
+# No interaction required - fixes everything automatically
 
 set -e
 
@@ -16,46 +16,50 @@ log_info() { echo -e "${CYAN}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}✓${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-log_step() { echo -e "${BOLD}${CYAN}==>${NC} $1"; }
 
 clear
 echo ""
-echo "=========================================="
-echo "  SnailyCAD Complete Authentication Fix"
-echo "  Automated Full Repair"
-echo "=========================================="
+echo "========================================================"
+echo "  SnailyCAD Complete Auto-Fix"
+echo "  No Questions Asked - Just Fix Everything"
+echo "========================================================"
 echo ""
 
-# Check if running as root
+# Must be root
 if [[ $EUID -ne 0 ]]; then
-   log_error "This script must be run as root"
-   echo "Run: sudo $0"
+   log_error "Must run as root: sudo $0"
    exit 1
 fi
 
-# Step 1: Find SnailyCAD directory
-log_step "Step 1: Locating SnailyCAD installation"
+# Step 1: Find SnailyCAD
+log_info "Step 1: Finding SnailyCAD installation..."
+
 SNAILY_DIR=""
-for dir in /home/snaily-cadv4 /home/snailycad /opt/snailycad /var/www/snailycad; do
-    if [[ -d "$dir" && -f "$dir/package.json" ]]; then
+for dir in /home/snaily-cadv4 /home/snailycad /opt/snailycad /var/www/snailycad /root/snailycad; do
+    if [[ -d "$dir" ]]; then
         SNAILY_DIR="$dir"
         break
     fi
 done
 
 if [[ -z "$SNAILY_DIR" ]]; then
-    log_error "Cannot find SnailyCAD installation"
-    log_info "Searching for package.json files..."
-    find /home /opt /var/www -name "package.json" -path "*/snaily*" 2>/dev/null | head -5 || true
+    # Try to find by package.json
+    SNAILY_DIR=$(find /home /opt /var/www /root -name "package.json" -path "*/snaily*" -type f 2>/dev/null | head -1 | xargs dirname)
+fi
+
+if [[ -z "$SNAILY_DIR" ]] || [[ ! -d "$SNAILY_DIR" ]]; then
+    log_error "Cannot find SnailyCAD directory"
+    log_info "Searched: /home/snaily-cadv4, /home/snailycad, /opt/snailycad, /var/www/snailycad"
     exit 1
 fi
 
-log_success "Found SnailyCAD at: $SNAILY_DIR"
+log_success "Found: $SNAILY_DIR"
 
 # Step 2: Find .env file
-log_step "Step 2: Locating configuration file"
+log_info "Step 2: Finding .env file..."
+
 ENV_FILE=""
-for location in "$SNAILY_DIR/.env" "$SNAILY_DIR/apps/api/.env"; do
+for location in "$SNAILY_DIR/.env" "$SNAILY_DIR/apps/api/.env" "$SNAILY_DIR/api/.env"; do
     if [[ -f "$location" ]]; then
         ENV_FILE="$location"
         break
@@ -63,156 +67,151 @@ for location in "$SNAILY_DIR/.env" "$SNAILY_DIR/apps/api/.env"; do
 done
 
 if [[ -z "$ENV_FILE" ]]; then
-    log_error "Cannot find .env file"
-    exit 1
-fi
-
-log_success "Found .env at: $ENV_FILE"
-
-# Backup .env
-cp "$ENV_FILE" "$ENV_FILE.backup_$(date +%Y%m%d_%H%M%S)"
-log_success "Backed up .env file"
-
-# Step 3: Parse current DATABASE_URL
-log_step "Step 3: Analyzing current database configuration"
-
-if ! grep -q "^DATABASE_URL=" "$ENV_FILE"; then
-    log_error "No DATABASE_URL found in .env"
-    exit 1
-fi
-
-CURRENT_URL=$(grep "^DATABASE_URL=" "$ENV_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-log_info "Current URL: $CURRENT_URL"
-
-# Parse connection string
-if [[ "$CURRENT_URL" =~ postgresql://([^:]+):([^@]+)@([^:/]+):?([0-9]*)/([^?]+) ]]; then
-    DB_USER="${BASH_REMATCH[1]}"
-    DB_PASSWORD="${BASH_REMATCH[2]}"
-    DB_HOST="${BASH_REMATCH[3]}"
-    DB_PORT="${BASH_REMATCH[4]:-5432}"
-    DB_NAME="${BASH_REMATCH[5]}"
+    # Create default location
+    ENV_FILE="$SNAILY_DIR/.env"
+    log_warning ".env not found, will create: $ENV_FILE"
 else
-    log_error "Cannot parse DATABASE_URL"
-    exit 1
+    log_success "Found: $ENV_FILE"
+    # Backup
+    cp "$ENV_FILE" "$ENV_FILE.backup_$(date +%Y%m%d_%H%M%S)"
+    log_success "Backed up .env"
 fi
 
-# URL-decode password if needed
-DB_PASSWORD_DECODED=$(python3 -c "import urllib.parse; print(urllib.parse.unquote('$DB_PASSWORD'))" 2>/dev/null || echo "$DB_PASSWORD")
+# Step 3: Get current config from .env (if exists)
+log_info "Step 3: Reading current configuration..."
 
-log_info "Configuration:"
+DB_USER="snailycad"
+DB_NAME="snaily-cad-v4"
+DB_HOST="localhost"
+DB_PORT="5432"
+DB_PASSWORD=""
+
+if [[ -f "$ENV_FILE" ]]; then
+    # Try to extract values
+    if grep -q "^DATABASE_URL=" "$ENV_FILE"; then
+        CURRENT_URL=$(grep "^DATABASE_URL=" "$ENV_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        
+        # Try to parse if it's a real URL (not variable reference)
+        if [[ "$CURRENT_URL" =~ postgresql://([^:]+):([^@]+)@([^:/]+):?([0-9]*)/([^?]+) ]]; then
+            DB_USER="${BASH_REMATCH[1]}"
+            PASS_TEMP="${BASH_REMATCH[2]}"
+            DB_HOST="${BASH_REMATCH[3]}"
+            DB_PORT="${BASH_REMATCH[4]:-5432}"
+            DB_NAME="${BASH_REMATCH[5]}"
+            
+            # URL decode password
+            DB_PASSWORD=$(python3 -c "import urllib.parse; print(urllib.parse.unquote('$PASS_TEMP'))" 2>/dev/null || echo "$PASS_TEMP")
+        fi
+    fi
+    
+    # Try to get from individual variables
+    [[ -z "$DB_USER" ]] && DB_USER=$(grep "^POSTGRES_USER=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'") || true
+    [[ -z "$DB_NAME" ]] && DB_NAME=$(grep "^POSTGRES_DB=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'") || true
+    [[ -z "$DB_HOST" ]] && DB_HOST=$(grep "^DB_HOST=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'") || true
+    [[ -z "$DB_PORT" ]] && DB_PORT=$(grep "^DB_PORT=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'") || true
+    [[ -z "$DB_PASSWORD" ]] && DB_PASSWORD=$(grep "^POSTGRES_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'") || true
+fi
+
+# Set defaults if still empty
+DB_USER=${DB_USER:-snailycad}
+DB_NAME=${DB_NAME:-snaily-cad-v4}
+DB_HOST=${DB_HOST:-localhost}
+DB_PORT=${DB_PORT:-5432}
+
+log_info "Current config:"
 echo "  User: $DB_USER"
+echo "  Database: $DB_NAME"
 echo "  Host: $DB_HOST"
 echo "  Port: $DB_PORT"
-echo "  Database: $DB_NAME"
-echo "  Password length: ${#DB_PASSWORD_DECODED} chars"
+echo "  Password: ${DB_PASSWORD:+[found]} ${DB_PASSWORD:-[not found]}"
 
-# Step 4: Find PostgreSQL config
-log_step "Step 4: Configuring PostgreSQL"
+# Step 4: Generate new simple password (no special chars)
+log_info "Step 4: Generating new secure password..."
 
-PG_HBA=""
-PG_VERSION=""
-for version_dir in /etc/postgresql/*/main; do
-    if [[ -f "$version_dir/pg_hba.conf" ]]; then
-        PG_HBA="$version_dir/pg_hba.conf"
-        PG_VERSION=$(echo "$version_dir" | grep -oP '\d+' | head -1)
-        break
-    fi
-done
+NEW_PASSWORD=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 24)
+log_success "Generated 24-char password"
+
+# Step 5: Configure PostgreSQL
+log_info "Step 5: Configuring PostgreSQL..."
+
+PG_HBA=$(find /etc/postgresql -name pg_hba.conf 2>/dev/null | head -1)
 
 if [[ -z "$PG_HBA" ]]; then
-    log_error "Cannot find pg_hba.conf"
+    log_error "PostgreSQL not found"
     exit 1
 fi
 
-log_success "Found PostgreSQL $PG_VERSION config: $PG_HBA"
+PG_VERSION=$(echo "$PG_HBA" | grep -oP '\d+' | head -1)
+log_success "Found PostgreSQL $PG_VERSION: $PG_HBA"
 
-# Backup pg_hba.conf
+# Backup
 cp "$PG_HBA" "$PG_HBA.backup_$(date +%Y%m%d_%H%M%S)"
-log_success "Backed up PostgreSQL config"
+log_success "Backed up config"
 
-# Step 5: Set to trust mode temporarily
-log_step "Step 5: Temporarily enabling trust authentication"
+# Step 6: Set to trust temporarily
+log_info "Step 6: Setting trust mode (temporary)..."
 
-cat > "$PG_HBA" <<'EOF'
+cat > "$PG_HBA" << 'HBAEOF'
 # TYPE  DATABASE        USER            ADDRESS                 METHOD
 local   all             postgres                                peer
 local   all             all                                     trust
 host    all             all             127.0.0.1/32            trust
 host    all             all             ::1/128                 trust
-host    all             all             0.0.0.0/0               trust
-EOF
+HBAEOF
 
 systemctl reload postgresql 2>/dev/null || service postgresql reload 2>/dev/null || /etc/init.d/postgresql reload 2>/dev/null
 sleep 3
-log_success "PostgreSQL reloaded with trust authentication"
+log_success "Trust mode enabled"
 
-# Step 6: Generate new simple password
-log_step "Step 6: Generating new secure password"
+# Step 7: Drop and recreate user (clean slate)
+log_info "Step 7: Recreating database user..."
 
-NEW_PASSWORD=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 24)
-log_success "Generated 24-character alphanumeric password"
+# Drop user if exists (and reassign owned objects first)
+su - postgres -c "psql -c \"REASSIGN OWNED BY \\\"$DB_USER\\\" TO postgres;\"" 2>/dev/null || true
+su - postgres -c "psql -c \"DROP OWNED BY \\\"$DB_USER\\\";\"" 2>/dev/null || true
+su - postgres -c "psql -c \"DROP USER IF EXISTS \\\"$DB_USER\\\";\"" 2>/dev/null || true
 
-# Step 7: Ensure database and user exist
-log_step "Step 7: Ensuring database and user exist"
+# Create fresh user with new password
+su - postgres -c "psql -c \"CREATE USER \\\"$DB_USER\\\" WITH PASSWORD '$NEW_PASSWORD' SUPERUSER CREATEDB CREATEROLE LOGIN;\""
+log_success "User created: $DB_USER"
 
-# Check if user exists
-if su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'\"" 2>/dev/null | grep -q "1"; then
-    log_success "User '$DB_USER' exists"
+# Step 8: Ensure database exists
+log_info "Step 8: Ensuring database exists..."
+
+if su - postgres -c "psql -lqt" | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
+    log_success "Database exists: $DB_NAME"
 else
-    log_warning "User '$DB_USER' doesn't exist, creating..."
-    su - postgres -c "psql -c \"CREATE USER \\\"$DB_USER\\\" WITH PASSWORD '$NEW_PASSWORD' SUPERUSER CREATEDB CREATEROLE LOGIN;\"" 2>&1
-    log_success "User created"
+    su - postgres -c "psql -c \"CREATE DATABASE \\\"$DB_NAME\\\" OWNER \\\"$DB_USER\\\";\""
+    log_success "Database created: $DB_NAME"
 fi
 
-# Check if database exists
-if su - postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\"" 2>/dev/null | grep -q "1"; then
-    log_success "Database '$DB_NAME' exists"
-else
-    log_warning "Database '$DB_NAME' doesn't exist, creating..."
-    su - postgres -c "psql -c \"CREATE DATABASE \\\"$DB_NAME\\\" OWNER \\\"$DB_USER\\\";\"" 2>&1
-    log_success "Database created"
-fi
+# Grant all privileges
+su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE \\\"$DB_NAME\\\" TO \\\"$DB_USER\\\";\""
+log_success "Privileges granted"
 
-# Step 8: Reset password using multiple methods
-log_step "Step 8: Setting new password"
+# Step 9: Set password using multiple methods
+log_info "Step 9: Setting password (multiple methods)..."
 
 # Method 1: ALTER USER
-log_info "Setting password (method 1)..."
 su - postgres -c "psql -c \"ALTER USER \\\"$DB_USER\\\" WITH PASSWORD '$NEW_PASSWORD';\"" >/dev/null 2>&1
 
-# Method 2: Direct pg_authid update with MD5
-log_info "Setting password (method 2)..."
+# Method 2: MD5 hash
 MD5_PASS=$(echo -n "${NEW_PASSWORD}${DB_USER}" | md5sum | cut -d' ' -f1)
 su - postgres -c "psql -c \"UPDATE pg_authid SET rolpassword = 'md5$MD5_PASS' WHERE rolname = '$DB_USER';\"" >/dev/null 2>&1
 
-# Method 3: SCRAM-SHA-256 if PostgreSQL >= 10
-if [[ "$PG_VERSION" -ge 10 ]]; then
-    log_info "Setting password (method 3 - SCRAM)..."
-    su - postgres -c "psql -c \"ALTER USER \\\"$DB_USER\\\" WITH PASSWORD '$NEW_PASSWORD';\"" >/dev/null 2>&1
-fi
+log_success "Password set"
 
-log_success "Password set successfully"
+# Step 10: Configure md5 authentication
+log_info "Step 10: Configuring md5 authentication..."
 
-# Step 9: Configure proper authentication
-log_step "Step 9: Configuring secure authentication"
-
-cat > "$PG_HBA" <<EOF
-# PostgreSQL Client Authentication Configuration
-# Configured by SnailyCAD automated fix script
-
+cat > "$PG_HBA" << EOF
 # TYPE  DATABASE        USER            ADDRESS                 METHOD
-
-# Local connections
 local   all             postgres                                peer
 local   all             $DB_USER                                md5
 local   all             all                                     md5
-
-# IPv4 local connections
 host    all             postgres        127.0.0.1/32            trust
 host    all             $DB_USER        127.0.0.1/32            md5
 host    all             all             127.0.0.1/32            md5
-
-# IPv6 local connections
 host    all             postgres        ::1/128                 trust
 host    all             $DB_USER        ::1/128                 md5
 host    all             all             ::1/128                 md5
@@ -220,188 +219,188 @@ EOF
 
 systemctl reload postgresql 2>/dev/null || service postgresql reload 2>/dev/null || /etc/init.d/postgresql reload 2>/dev/null
 sleep 3
-log_success "Configured md5 authentication"
+log_success "MD5 authentication configured"
 
-# Step 10: Test connection
-log_step "Step 10: Testing database connection"
+# Step 11: Test connection
+log_info "Step 11: Testing connection..."
 
 export PGPASSWORD="$NEW_PASSWORD"
+TEST_SUCCESS=0
 
-TEST_RESULT=""
 for i in {1..5}; do
-    if psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
-        TEST_RESULT="success"
+    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
+        TEST_SUCCESS=1
         break
     fi
     sleep 2
 done
 
-if [[ "$TEST_RESULT" == "success" ]]; then
-    log_success "✓✓✓ Database connection verified!"
+if [[ $TEST_SUCCESS -eq 1 ]]; then
+    log_success "✓✓✓ CONNECTION WORKS!"
 else
-    log_error "Connection test failed"
-    log_warning "Falling back to trust authentication..."
+    log_error "Connection failed with md5, switching to trust..."
     
-    cat > "$PG_HBA" <<EOF
-local   all             postgres                                peer
-local   all             $DB_USER                                trust
-local   all             all                                     md5
-host    all             $DB_USER        127.0.0.1/32            trust
-host    all             all             127.0.0.1/32            md5
-host    all             $DB_USER        ::1/128                 trust
-host    all             all             ::1/128                 md5
-EOF
+    # Fallback to trust for this user
+    sed -i "s/^local.*$DB_USER.*md5/local   all             $DB_USER                                trust/" "$PG_HBA"
+    sed -i "s/^host.*$DB_USER.*127.0.0.1.*md5/host    all             $DB_USER        127.0.0.1\/32            trust/" "$PG_HBA"
+    sed -i "s/^host.*$DB_USER.*::1.*md5/host    all             $DB_USER        ::1\/128                 trust/" "$PG_HBA"
     
     systemctl reload postgresql 2>/dev/null || service postgresql reload 2>/dev/null
     sleep 2
-    log_warning "Using trust authentication for $DB_USER (no password required)"
+    
+    log_warning "Using trust authentication (no password required)"
 fi
 
-# Step 11: Update .env file
-log_step "Step 11: Updating SnailyCAD configuration"
+# Step 12: Update .env file
+log_info "Step 12: Updating .env file..."
 
-NEW_DATABASE_URL="postgresql://$DB_USER:$NEW_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME"
+NEW_DATABASE_URL="postgresql://${DB_USER}:${NEW_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
-# Update DATABASE_URL
-sed -i "s|^DATABASE_URL=.*|DATABASE_URL=\"$NEW_DATABASE_URL\"|" "$ENV_FILE"
-sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=\"$NEW_PASSWORD\"|" "$ENV_FILE" 2>/dev/null || true
-sed -i "s|^POSTGRES_USER=.*|POSTGRES_USER=\"$DB_USER\"|" "$ENV_FILE" 2>/dev/null || true
-sed -i "s|^DB_HOST=.*|DB_HOST=\"$DB_HOST\"|" "$ENV_FILE" 2>/dev/null || true
-sed -i "s|^DB_PORT=.*|DB_PORT=\"$DB_PORT\"|" "$ENV_FILE" 2>/dev/null || true
+# Read existing .env content
+if [[ -f "$ENV_FILE" ]]; then
+    # Update existing
+    if grep -q "^DATABASE_URL=" "$ENV_FILE"; then
+        sed -i "s|^DATABASE_URL=.*|DATABASE_URL=\"$NEW_DATABASE_URL\"|" "$ENV_FILE"
+    else
+        echo "DATABASE_URL=\"$NEW_DATABASE_URL\"" >> "$ENV_FILE"
+    fi
+    
+    # Update other vars if they exist
+    sed -i "s|^POSTGRES_USER=.*|POSTGRES_USER=\"$DB_USER\"|" "$ENV_FILE" 2>/dev/null || true
+    sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=\"$NEW_PASSWORD\"|" "$ENV_FILE" 2>/dev/null || true
+    sed -i "s|^POSTGRES_DB=.*|POSTGRES_DB=\"$DB_NAME\"|" "$ENV_FILE" 2>/dev/null || true
+    sed -i "s|^DB_HOST=.*|DB_HOST=\"$DB_HOST\"|" "$ENV_FILE" 2>/dev/null || true
+    sed -i "s|^DB_PORT=.*|DB_PORT=\"$DB_PORT\"|" "$ENV_FILE" 2>/dev/null || true
+else
+    # Create new .env
+    cat > "$ENV_FILE" << ENVEOF
+# Database Configuration - Auto-generated
+DATABASE_URL="$NEW_DATABASE_URL"
 
-log_success "Updated .env configuration"
+POSTGRES_USER="$DB_USER"
+POSTGRES_PASSWORD="$NEW_PASSWORD"
+POSTGRES_DB="$DB_NAME"
+DB_HOST="$DB_HOST"
+DB_PORT="$DB_PORT"
+ENVEOF
+fi
 
-# Step 12: Fix permissions
-log_step "Step 12: Fixing file permissions"
+log_success ".env updated"
 
-chown -R $(stat -c '%U' "$SNAILY_DIR") "$SNAILY_DIR" 2>/dev/null || true
-chmod 600 "$ENV_FILE" 2>/dev/null || true
+# Step 13: Fix permissions
+log_info "Step 13: Fixing permissions..."
 
+chmod 600 "$ENV_FILE"
+OWNER=$(stat -c '%U' "$SNAILY_DIR" 2>/dev/null || echo "root")
+chown -R "$OWNER:$OWNER" "$SNAILY_DIR" 2>/dev/null || true
 log_success "Permissions fixed"
 
-# Step 13: Restart services
-log_step "Step 13: Restarting services"
-
-# Stop any running instances
-log_info "Stopping existing processes..."
-pkill -f "snailycad" 2>/dev/null || true
-pm2 stop all 2>/dev/null || true
-pm2 delete all 2>/dev/null || true
-sleep 2
-
-log_success "Services stopped"
-
-# Step 14: Clean Prisma cache
-log_step "Step 14: Cleaning Prisma cache"
+# Step 14: Clean caches
+log_info "Step 14: Cleaning Prisma cache..."
 
 cd "$SNAILY_DIR"
 rm -rf node_modules/.prisma 2>/dev/null || true
 rm -rf apps/api/node_modules/.prisma 2>/dev/null || true
 rm -rf .next 2>/dev/null || true
 
-# Find pnpm cache
+# Clean pnpm store
 PNPM_STORE=$(pnpm store path 2>/dev/null || echo "")
 if [[ -n "$PNPM_STORE" ]]; then
-    log_info "Clearing pnpm Prisma cache..."
     find "$PNPM_STORE" -type d -name ".prisma" -exec rm -rf {} + 2>/dev/null || true
 fi
 
 log_success "Cache cleared"
 
-# Final summary
-echo ""
-echo "=========================================="
-echo "  ✓ FIX COMPLETE!"
-echo "=========================================="
-echo ""
-log_success "Database Configuration:"
-echo "  Host: $DB_HOST"
-echo "  Port: $DB_PORT"
-echo "  Database: $DB_NAME"
-echo "  User: $DB_USER"
-echo "  Password: $NEW_PASSWORD"
-echo ""
-log_success "Files Updated:"
-echo "  Config: $ENV_FILE"
-echo "  Backup: $ENV_FILE.backup_*"
-echo ""
-log_success "PostgreSQL Config:"
-echo "  File: $PG_HBA"
-echo "  Backup: $PG_HBA.backup_*"
-echo ""
+# Step 15: Stop existing processes
+log_info "Step 15: Stopping existing processes..."
 
-# Save credentials to file
+pkill -f "snailycad" 2>/dev/null || true
+pm2 stop all 2>/dev/null || true
+pm2 delete all 2>/dev/null || true
+sleep 2
+log_success "Processes stopped"
+
+# Save credentials
 CREDS_FILE="/root/snailycad_credentials.txt"
-cat > "$CREDS_FILE" <<EOF
+cat > "$CREDS_FILE" << CREDEOF
 SnailyCAD Database Credentials
 Generated: $(date)
-========================================
+======================================================
 
-Database URL:
+DATABASE_URL:
 $NEW_DATABASE_URL
 
-Individual values:
-Host: $DB_HOST
-Port: $DB_PORT
-Database: $DB_NAME
-User: $DB_USER
-Password: $NEW_PASSWORD
+Individual Values:
+  Host: $DB_HOST
+  Port: $DB_PORT
+  Database: $DB_NAME
+  User: $DB_USER
+  Password: $NEW_PASSWORD
 
-Test command:
-PGPASSWORD='$NEW_PASSWORD' psql -h $DB_HOST -U $DB_USER -d $DB_NAME
+PostgreSQL Test Command:
+  PGPASSWORD='$NEW_PASSWORD' psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME
 
-========================================
-EOF
+Files Modified:
+  .env: $ENV_FILE
+  pg_hba.conf: $PG_HBA
+
+Backups:
+  .env backup: $ENV_FILE.backup_*
+  pg_hba.conf backup: $PG_HBA.backup_*
+
+======================================================
+CREDEOF
 
 chmod 600 "$CREDS_FILE"
-log_success "Credentials saved to: $CREDS_FILE"
 
+# Final summary
 echo ""
-echo "=========================================="
-echo "  NEXT STEPS:"
-echo "=========================================="
+echo "========================================================"
+echo "  ✓✓✓ COMPLETE AUTO-FIX FINISHED!"
+echo "========================================================"
 echo ""
-echo "1. Start SnailyCAD:"
-echo "   cd $SNAILY_DIR"
-echo "   pnpm run start"
+log_success "Database configured successfully"
 echo ""
-echo "2. Or with PM2:"
-echo "   cd $SNAILY_DIR"
-echo "   pm2 start ecosystem.config.js"
+echo "Configuration:"
+echo "  User: $DB_USER"
+echo "  Database: $DB_NAME"
+echo "  Password: $NEW_PASSWORD"
 echo ""
-echo "3. Check logs if issues occur:"
-echo "   pm2 logs"
-echo "   tail -f /var/log/postgresql/postgresql-*.log"
+echo "Files:"
+echo "  Config: $ENV_FILE"
+echo "  Credentials: $CREDS_FILE"
 echo ""
-echo "=========================================="
+echo "Next Steps:"
+echo "  1. cd $SNAILY_DIR"
+echo "  2. pnpm run start"
+echo ""
+echo "Or with PM2:"
+echo "  pm2 start ecosystem.config.js"
+echo ""
+echo "Check logs:"
+echo "  pm2 logs"
+echo "  tail -f $SNAILY_DIR/start.log"
+echo ""
+echo "========================================================"
 echo ""
 
-# Offer to start now
-read -p "Would you like to start SnailyCAD now? (y/n): " START_NOW
+# Offer to start
+echo "Start SnailyCAD now? (y/n)"
+read -t 10 -n 1 START_NOW || START_NOW="n"
+echo ""
 
 if [[ "$START_NOW" =~ ^[Yy] ]]; then
-    echo ""
     log_info "Starting SnailyCAD..."
     cd "$SNAILY_DIR"
     
-    # Try to start with existing method
     if [[ -f "ecosystem.config.js" ]] && command -v pm2 >/dev/null 2>&1; then
-        log_info "Starting with PM2..."
         pm2 start ecosystem.config.js
-        sleep 5
-        pm2 status
-    else
-        log_info "Starting with pnpm..."
-        log_warning "This will run in foreground. Press Ctrl+C to stop, then use PM2 for background mode"
         sleep 3
+        pm2 logs --lines 20
+    else
+        log_info "Starting with pnpm (use Ctrl+C to stop)..."
         pnpm run start
     fi
 else
-    log_info "Skipping automatic start"
-    echo ""
-    log_success "Everything is ready! Start SnailyCAD when you're ready."
+    log_success "Ready! Start SnailyCAD when you're ready."
 fi
-
-echo ""
-log_success "All done! 🎉"
-echo ""

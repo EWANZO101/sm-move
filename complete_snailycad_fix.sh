@@ -368,6 +368,34 @@ fi
 print_message "You can now connect using:"
 echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME"
 echo ""
+
+# Step 10: Move .env to /home/snaily-cadv4
+print_message "Step 10: Moving .env file to /home/snaily-cadv4/..."
+
+# Check if snaily-cadv4 directory exists
+if [ ! -d "/home/snaily-cadv4" ]; then
+    print_message "Creating /home/snaily-cadv4 directory..."
+    mkdir -p /home/snaily-cadv4
+fi
+
+# If .env is not already in /home/snaily-cadv4, move it there
+if [ "$ENV_FILE" != "/home/snaily-cadv4/.env" ]; then
+    if [ -f "$ENV_FILE" ]; then
+        print_message "Moving .env from $ENV_FILE to /home/snaily-cadv4/.env"
+        cp "$ENV_FILE" /home/snaily-cadv4/.env
+        print_message ".env file successfully moved to /home/snaily-cadv4/"
+    else
+        print_warning ".env file not found at $ENV_FILE"
+    fi
+else
+    print_message ".env already in /home/snaily-cadv4/, no move needed"
+fi
+echo ""
+
+print_message "=== Setup Complete ==="
+print_message "Configuration file location: /home/snaily-cadv4/.env"
+echo ""
+
 if [ "$IMPORT_SQL" != "yes" ]; then
     print_message "To import a database dump manually, use:"
     echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME < your_dump.sql"

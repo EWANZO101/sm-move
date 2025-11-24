@@ -1,6 +1,5 @@
 #!/bin/bash
 set -e
-
 echo "=== SnailyCAD v4 Simple Backup Script ==="
 
 # Configuration
@@ -9,7 +8,7 @@ ENV_FILE="$SNAILYCAD_DIR/.env"
 BACKUP_DIR="$SNAILYCAD_DIR/backups"
 RETENTION_DAYS=7
 REMOTE_USER="root"
-REMOTE_DIR="/home"
+REMOTE_DIR="/root"  # Changed from /home to /root
 
 echo "SnailyCAD directory: $SNAILYCAD_DIR"
 echo "Backup directory: $BACKUP_DIR"
@@ -97,6 +96,24 @@ fi
 echo -n "Enter SSH password for root@$REMOTE_HOST: "
 read -rs REMOTE_PASS
 echo ""
+echo ""
+
+# Test SSH connection first
+echo "=== Testing SSH connection ==="
+if ! sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$REMOTE_USER@$REMOTE_HOST" "echo 'SSH OK'" >/dev/null 2>&1; then
+    echo "ERROR: Cannot connect to remote server via SSH"
+    echo "Possible issues:"
+    echo "  - Wrong password"
+    echo "  - Password authentication disabled on remote server"
+    echo "  - Firewall blocking SSH"
+    echo ""
+    echo "To enable password authentication on remote server, run:"
+    echo "  sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config"
+    echo "  systemctl restart sshd"
+    exit 1
+fi
+echo "SSH connection OK"
+echo ""
 
 ### CREATE BACKUP
 TS=$(date +"%Y-%m-%d_%H-%M-%S")
@@ -123,11 +140,12 @@ unset PGPASSWORD
 
 ### TRANSFER TO REMOTE
 echo "=== Transferring to remote server ==="
-if sshpass -p "$REMOTE_PASS" scp -o StrictHostKeyChecking=no "$ARCHIVE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR"; then
+if sshpass -p "$REMOTE_PASS" scp -o StrictHostKeyChecking=no "$ARCHIVE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"; then
     echo "Backup transferred successfully to: $REMOTE_HOST:$REMOTE_DIR"
     echo "Transferred file size: $ARCHIVE_SIZE"
 else
     echo "ERROR: Failed to transfer backup to remote server"
+    echo "The backup is still saved locally at: $ARCHIVE"
     exit 1
 fi
 

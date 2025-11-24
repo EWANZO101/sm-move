@@ -90,18 +90,29 @@ echo ""
 # Step 4: Load .env file
 print_message "Step 4: Checking for .env file..."
 
-# Check if .env already exists in /home
+# Check multiple locations for .env file
 if [ -f "/home/.env" ]; then
     print_warning ".env file already exists in /home, using existing file"
     ENV_FILE="/home/.env"
+elif [ -f "/home/snaily-cadv4/.env" ]; then
+    print_message "Found .env in /home/snaily-cadv4/, using existing file"
+    ENV_FILE="/home/snaily-cadv4/.env"
+elif [ -f "/home/snailycad/.env" ]; then
+    print_message "Found .env in /home/snailycad/, using existing file"
+    ENV_FILE="/home/snailycad/.env"
 elif [ -f "/home/snaily_backup/.env" ]; then
-    print_message "Importing .env from /home/snaily_backup/.env to /home/.env..."
-    cp /home/snaily_backup/.env /home/.env
-    ENV_FILE="/home/.env"
-    print_message ".env file imported successfully"
+    print_message "Importing .env from /home/snaily_backup/.env..."
+    ENV_FILE="/home/snaily_backup/.env"
 else
-    print_error ".env file not found in /home or /home/snaily_backup/"
-    exit 1
+    print_error ".env file not found in common locations"
+    print_error "Searched: /home/, /home/snaily-cadv4/, /home/snailycad/, /home/snaily_backup/"
+    echo ""
+    print_message "Please specify the .env file location:"
+    read -p "Enter full path to .env file: " ENV_FILE
+    if [ ! -f "$ENV_FILE" ]; then
+        print_error "File not found at: $ENV_FILE"
+        exit 1
+    fi
 fi
 
 print_message "Loading configuration from $ENV_FILE..."

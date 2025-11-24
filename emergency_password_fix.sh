@@ -2,6 +2,10 @@
 
 # Emergency PostgreSQL Password Fixer for SnailyCAD
 # Run this if authentication is failing
+# 
+# Usage:
+#   Interactive: sudo ./emergency_password_fix.sh
+#   Automated:   sudo ./emergency_password_fix.sh --auto <user> <database> <password>
 
 set -e
 
@@ -22,15 +26,24 @@ echo "  SnailyCAD Emergency Password Fixer"
 echo "================================================"
 echo ""
 
-# Get credentials
-read -p "Database user [snailycad]: " DB_USER
-DB_USER=${DB_USER:-snailycad}
+# Check for automated mode
+if [[ "$1" == "--auto" ]] && [[ -n "$2" ]] && [[ -n "$3" ]] && [[ -n "$4" ]]; then
+    # Automated mode with arguments
+    DB_USER="$2"
+    DB_NAME="$3"
+    DB_PASSWORD="$4"
+    log_info "Running in automated mode"
+else
+    # Interactive mode - get credentials
+    read -p "Database user [snailycad]: " DB_USER
+    DB_USER=${DB_USER:-snailycad}
 
-read -p "Database name [snailycad]: " DB_NAME
-DB_NAME=${DB_NAME:-snailycad}
+    read -p "Database name [snailycad]: " DB_NAME
+    DB_NAME=${DB_NAME:-snailycad}
 
-read -sp "Database password: " DB_PASSWORD
-echo ""
+    read -sp "Database password: " DB_PASSWORD
+    echo ""
+fi
 
 if [[ -z "$DB_PASSWORD" ]]; then
     log_error "Password cannot be empty"

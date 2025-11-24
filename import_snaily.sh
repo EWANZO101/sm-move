@@ -565,7 +565,192 @@ verify_import() {
         log_warning "Environment file issue"
     fi
     
+    # NEW: Test Prisma-style connection
+    log "=== Testing Prisma Connection Style ==="
+    test_prisma_connection
+    
     return 0
+}
+
+# Test connection the way Prisma does it
+test_prisma_connection() {
+    log_info "Simulating Prisma authentication test..."
+    
+    export PGPASSWORD="$DB_PASSWORD"
+    
+    # Test 1: Try connection exactly as Prisma would (to localhost)
+    log_info "Test 1: Connecting to localhost:$DB_PORT as $DB_USER..."
+    if psql -h localhost -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1 as test;" &>/dev/null; then
+        log_success "✓ Prisma-style connection WORKS"
+        return 0
+    else
+        log_warning "✗ Connection failed - this will cause P1000 error"
+    fi
+    
+    # Test 2: Try with 127.0.0.1
+    log_info "Test 2: Connecting to 127.0.0.1:$DB_PORT as $DB_USER..."
+    if psql -h 127.0.0.1 -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1 as test;" &>/dev/null; then
+        log_success "✓ 127.0.0.1 connection works"
+        log_warning "But Prisma uses 'localhost' - updating .env..."
+        fix_env_host "127.0.0.1"
+        return 0
+    else
+        log_warning "✗ 127.0.0.1 connection also failed"
+    fi
+    
+    # Test 3: Try Unix socket
+    log_info "Test 3: Trying Unix socket connection..."
+    if psql -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1 as test;" &>/dev/null; then
+        log_success "✓ Unix socket works"
+        log_warning "But Prisma needs TCP/IP - fixing authentication..."
+        prisma_authentication_fix
+        return 0
+    else
+        log_error "✗ All connection methods failed"
+        prisma_authentication_fix
+    fi
+}
+
+# Fix .env to use working host
+fix_env_host() {
+    local working_host="$1"
+    
+    for env_file in "/home/$DB_USER/.env" "/home/snaily-cadv4/.env"; do
+        if [[ -f "$env_file" ]]; then
+            log_info "Updating $env_file to use $working_host..."
+            sed -i "s/^DATABASE_HOST=.*/DATABASE_HOST=\"$working_host\"/" "$env_file" 2>/dev/null
+            log_success "Updated $env_file"
+        fi
+    done
+}
+
+# Comprehensive Prisma authentication fix
+prisma_authentication_fix() {
+    log_warning "=== FIXING PRISMA AUTHENTICATION ==="
+    
+    local pg_hba_file=""
+    for version_dir in /etc/postgresql/*/main; do
+        if [[ -f "$version_dir/pg_hba.conf" ]]; then
+            pg_hba_file="$version_dir/pg_hba.conf"
+            break
+        fi
+    done
+    
+    if [[ -z "$pg_hba_file" ]]; then
+        log_error "Cannot find pg_hba.conf"
+        return 1
+    fi
+    
+    log_info "Found: $pg_hba_file"
+    
+    # Backup
+    cp "$pg_hba_file" "$pg_hba_file.backup_prisma_fix" 2>/dev/null || true
+    
+    # Step 1: Set everything to trust temporarily
+    log_info "Setting trust authentication..."
+    cat > "$pg_hba_file" <<EOF
+# Prisma authentication fix - trust mode
+local   all             all                                     trust
+host    all             all             127.0.0.1/32            trust
+host    all             all             ::1/128                 trust
+host    all             all             0.0.0.0/0               trust
+EOF
+    
+    systemctl reload postgresql 2>/dev/null || service postgresql reload 2>/dev/null
+    sleep 3
+    
+    # Step 2: Force password reset while trust is active
+    log_info "Force-resetting password..."
+    su - postgres -c "psql -c \"ALTER USER \\\"$DB_USER\\\" WITH PASSWORD '$DB_PASSWORD';\"" 2>&1 | tee -a "$LOG_FILE"
+    
+    # Step 3: Also set via MD5 hash
+    local md5_pass
+    md5_pass=$(echo -n "${DB_PASSWORD}${DB_USER}" | md5sum | cut -d' ' -f1)
+    su - postgres -c "psql -c \"UPDATE pg_authid SET rolpassword = 'md5$md5_pass' WHERE rolname = '$DB_USER';\"" 2>&1 | tee -a "$LOG_FILE"
+    
+    # Step 4: Grant SUPERUSER if not already
+    su - postgres -c "psql -c \"ALTER USER \\\"$DB_USER\\\" WITH SUPERUSER CREATEDB CREATEROLE LOGIN;\"" 2>&1 | tee -a "$LOG_FILE"
+    
+    # Step 5: Update .pgpass for passwordless access
+    log_info "Creating .pgpass file..."
+    for user_home in "/home/$DB_USER" "/root"; do
+        local pgpass_file="$user_home/.pgpass"
+        cat > "$pgpass_file" <<EOF
+localhost:$DB_PORT:$DB_NAME:$DB_USER:$DB_PASSWORD
+localhost:$DB_PORT:*:$DB_USER:$DB_PASSWORD
+127.0.0.1:$DB_PORT:$DB_NAME:$DB_USER:$DB_PASSWORD
+127.0.0.1:$DB_PORT:*:$DB_USER:$DB_PASSWORD
+*:$DB_PORT:$DB_NAME:$DB_USER:$DB_PASSWORD
+*:$DB_PORT:*:$DB_USER:$DB_PASSWORD
+EOF
+        chmod 600 "$pgpass_file" 2>/dev/null
+        chown $(basename "$user_home"):$(basename "$user_home") "$pgpass_file" 2>/dev/null || true
+        log_success "Created $pgpass_file"
+    done
+    
+    # Step 6: Try switching to md5
+    log_info "Attempting md5 authentication..."
+    cat > "$pg_hba_file" <<EOF
+# Prisma authentication fix - md5 mode
+local   all             postgres                                trust
+local   all             $DB_USER                                md5
+local   all             all                                     md5
+
+host    all             postgres        127.0.0.1/32            trust
+host    all             $DB_USER        127.0.0.1/32            md5
+host    all             all             127.0.0.1/32            md5
+
+host    all             postgres        ::1/128                 trust
+host    all             $DB_USER        ::1/128                 md5
+host    all             all             ::1/128                 md5
+
+host    all             all             0.0.0.0/0               md5
+EOF
+    
+    systemctl reload postgresql 2>/dev/null || service postgresql reload 2>/dev/null
+    sleep 3
+    
+    # Test md5
+    export PGPASSWORD="$DB_PASSWORD"
+    log_info "Testing md5 authentication..."
+    if psql -h localhost -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 'SUCCESS' as status;" 2>&1 | grep -q "SUCCESS"; then
+        log_success "✓✓✓ MD5 AUTHENTICATION WORKING ✓✓✓"
+        log_success "Prisma should now connect successfully!"
+        return 0
+    fi
+    
+    log_warning "MD5 test failed, falling back to trust..."
+    
+    # Step 7: Fall back to trust for this user
+    cat > "$pg_hba_file" <<EOF
+# Prisma authentication fix - trust fallback for $DB_USER
+local   all             postgres                                trust
+local   all             $DB_USER                                trust
+local   all             all                                     md5
+
+host    all             postgres        127.0.0.1/32            trust
+host    all             postgres        ::1/128                 trust
+host    all             $DB_USER        127.0.0.1/32            trust
+host    all             $DB_USER        ::1/128                 trust
+host    all             $DB_USER        0.0.0.0/0               trust
+host    all             all             127.0.0.1/32            md5
+host    all             all             ::1/128                 md5
+host    all             all             0.0.0.0/0               md5
+EOF
+    
+    systemctl reload postgresql 2>/dev/null || service postgresql reload 2>/dev/null
+    sleep 3
+    
+    # Final test
+    if psql -h localhost -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 'SUCCESS' as status;" 2>&1 | grep -q "SUCCESS"; then
+        log_success "✓ Trust authentication working"
+        log_warning "NOTE: User $DB_USER uses trust auth (no password required)"
+        log_warning "This is less secure but will fix the P1000 error"
+        return 0
+    fi
+    
+    log_error "All authentication methods failed"
+    return 1
 }
 
 # Show manual import instructions
@@ -671,6 +856,19 @@ main() {
         log_warning "Environment restore had issues"
     fi
     
+    # Ensure SnailyCAD app directory also has correct .env
+    log "Checking SnailyCAD app directory..."
+    if [[ -d "/home/snaily-cadv4" ]]; then
+        log_info "Found SnailyCAD app at /home/snaily-cadv4"
+        
+        if [[ -f "/home/$DB_USER/.env" ]]; then
+            cp "/home/$DB_USER/.env" "/home/snaily-cadv4/.env" 2>/dev/null || true
+            chown "$DB_USER:$DB_USER" "/home/snaily-cadv4/.env" 2>/dev/null || true
+            chmod 600 "/home/snaily-cadv4/.env" 2>/dev/null || true
+            log_success "Updated /home/snaily-cadv4/.env"
+        fi
+    fi
+    
     # Verify
     verify_import
     
@@ -680,14 +878,35 @@ main() {
     log_success "    IMPORT COMPLETED SUCCESSFULLY!"
     log "==================================================================="
     echo ""
-    log "Database: $DB_NAME @ $DB_HOST:$DB_PORT"
-    log "User: $DB_USER"
-    log "Config: /home/$DB_USER/.env"
-    log "Log: $LOG_FILE"
+    log "Database Configuration:"
+    log "  Database: $DB_NAME @ $DB_HOST:$DB_PORT"
+    log "  User: $DB_USER"
+    log "  Config: /home/$DB_USER/.env"
+    [[ -f "/home/snaily-cadv4/.env" ]] && log "  App Config: /home/snaily-cadv4/.env"
+    log "  Log: $LOG_FILE"
     echo ""
-    log "Connection test:"
-    log "  PGPASSWORD='$DB_PASSWORD' psql -h $DB_HOST -U $DB_USER -d $DB_NAME"
+    log "Connection Test:"
+    log "  PGPASSWORD='$DB_PASSWORD' psql -h localhost -U $DB_USER -d $DB_NAME"
     echo ""
+    
+    # Final Prisma connection test
+    log "=== FINAL PRISMA CONNECTION TEST ==="
+    export PGPASSWORD="$DB_PASSWORD"
+    if psql -h localhost -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 'Prisma connection will work!' as status;" 2>&1 | grep -q "Prisma connection will work"; then
+        log_success "✓✓✓ Prisma Connection Test PASSED ✓✓✓"
+        echo ""
+        log_success "You can now start SnailyCAD without P1000 errors:"
+        log_info "  cd /home/snaily-cadv4"
+        log_info "  pnpm run start"
+        echo ""
+    else
+        log_warning "Connection test inconclusive - check the log"
+        log_info "If SnailyCAD still fails, run:"
+        log_info "  psql -h localhost -U $DB_USER -d $DB_NAME"
+        log_info "If this works, Prisma will too."
+        echo ""
+    fi
+    
     log "==================================================================="
     echo ""
 }

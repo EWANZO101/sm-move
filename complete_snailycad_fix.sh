@@ -104,14 +104,57 @@ elif [ -f "/home/snaily_backup/.env" ]; then
     print_message "Importing .env from /home/snaily_backup/.env..."
     ENV_FILE="/home/snaily_backup/.env"
 else
-    print_error ".env file not found in common locations"
-    print_error "Searched: /home/, /home/snaily-cadv4/, /home/snailycad/, /home/snaily_backup/"
-    echo ""
-    print_message "Please specify the .env file location:"
-    read -p "Enter full path to .env file: " ENV_FILE
-    if [ ! -f "$ENV_FILE" ]; then
-        print_error "File not found at: $ENV_FILE"
-        exit 1
+    # No .env found, search for backup tar.gz files
+    print_warning ".env file not found in standard locations"
+    print_message "Searching for backup files in /home and /home/snaily-cadv4/..."
+    
+    # Search for backup files in both locations
+    BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f 2>/dev/null | sort -r | head -1)
+    
+    if [ -z "$BACKUP_FILE" ]; then
+        BACKUP_FILE=$(find /home/snaily-cadv4 -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f 2>/dev/null | sort -r | head -1)
+    fi
+    
+    if [ -n "$BACKUP_FILE" ]; then
+        print_message "Found backup file: $BACKUP_FILE"
+        print_message "Extracting .env from backup..."
+        
+        # Create temporary extraction directory
+        EXTRACT_DIR="/tmp/snaily_restore_$$"
+        mkdir -p "$EXTRACT_DIR"
+        
+        # Extract the backup
+        tar -xzf "$BACKUP_FILE" -C "$EXTRACT_DIR" 2>/dev/null
+        
+        # Look for .env file in extracted contents
+        BACKUP_ENV=$(find "$EXTRACT_DIR" -name ".env" -type f | head -1)
+        
+        if [ -n "$BACKUP_ENV" ]; then
+            print_message "Found .env in backup, copying to /home/.env"
+            cp "$BACKUP_ENV" /home/.env
+            ENV_FILE="/home/.env"
+            print_message ".env file extracted successfully from backup"
+        else
+            print_error ".env file not found in backup"
+            rm -rf "$EXTRACT_DIR"
+            exit 1
+        fi
+    else
+        print_error ".env file not found and no backup files found"
+        print_error "Searched locations:"
+        echo "  - /home/.env"
+        echo "  - /home/snaily-cadv4/.env"
+        echo "  - /home/snailycad/.env"
+        echo "  - /home/snaily_backup/.env"
+        echo "  - /home/snaily_backup_*.tar.gz"
+        echo "  - /home/snaily-cadv4/snaily_backup_*.tar.gz"
+        echo ""
+        print_message "Please specify the .env file location:"
+        read -p "Enter full path to .env file: " ENV_FILE
+        if [ ! -f "$ENV_FILE" ]; then
+            print_error "File not found at: $ENV_FILE"
+            exit 1
+        fi
     fi
 fi
 
@@ -139,56 +182,43 @@ echo "  Database: $DB_NAME"
 echo "  User: $DB_USER"
 echo ""
 
-# Step 4.5: Check for and extract backup file
-print_message "Step 4.5: Checking for backup files in /home/snaily-cadv4/..."
+# Step 4.5: Check for and extract backup file for SQL import
+print_message "Step 4.5: Checking for backup SQL dump..."
 
-# Find the most recent snaily_backup tar.gz file
-BACKUP_FILE=$(ls -t /home/snaily-cadv4/snaily_backup_*.tar.gz 2>/dev/null | head -1)
+# If we already extracted a backup above, use that
+if [ -z "$EXTRACT_DIR" ] || [ ! -d "$EXTRACT_DIR" ]; then
+    # Find the most recent snaily_backup tar.gz file in both locations
+    BACKUP_FILE=$(find /home -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f 2>/dev/null | sort -r | head -1)
+    
+    if [ -z "$BACKUP_FILE" ]; then
+        BACKUP_FILE=$(find /home/snaily-cadv4 -maxdepth 1 -name "snaily_backup_*.tar.gz" -type f 2>/dev/null | sort -r | head -1)
+    fi
+    
+    if [ -n "$BACKUP_FILE" ]; then
+        print_message "Found backup file: $BACKUP_FILE"
+        
+        # Create temporary extraction directory
+        EXTRACT_DIR="/tmp/snaily_restore_$$"
+        mkdir -p "$EXTRACT_DIR"
+        
+        print_message "Extracting backup file..."
+        tar -xzf "$BACKUP_FILE" -C "$EXTRACT_DIR" 2>/dev/null
+    fi
+fi
 
-if [ -n "$BACKUP_FILE" ]; then
-    print_message "Found backup file: $BACKUP_FILE"
+# Look for SQL dump in extracted backup
+if [ -d "$EXTRACT_DIR" ]; then
+    SQL_DUMP=$(find "$EXTRACT_DIR" -name "*.sql" -type f | head -1)
     
-    # Create temporary extraction directory
-    EXTRACT_DIR="/tmp/snaily_restore_$$"
-    mkdir -p "$EXTRACT_DIR"
-    
-    print_message "Extracting backup file..."
-    tar -xzf "$BACKUP_FILE" -C "$EXTRACT_DIR"
-    
-    if [ $? -eq 0 ]; then
-        print_message "Backup extracted successfully to $EXTRACT_DIR"
-        
-        # Look for SQL dump file in extracted contents
-        SQL_DUMP=$(find "$EXTRACT_DIR" -name "*.sql" -type f | head -1)
-        
-        if [ -n "$SQL_DUMP" ]; then
-            print_message "Found SQL dump: $SQL_DUMP"
-            IMPORT_SQL="yes"
-        else
-            print_warning "No SQL dump found in backup file"
-            IMPORT_SQL="no"
-        fi
-        
-        # Check if there's a .env file in the backup
-        BACKUP_ENV=$(find "$EXTRACT_DIR" -name ".env" -type f | head -1)
-        if [ -n "$BACKUP_ENV" ] && [ -z "$ENV_FILE" ]; then
-            print_message "Found .env in backup, using it"
-            ENV_FILE="$BACKUP_ENV"
-            # Re-export variables from backup .env
-            export $(grep -v '^#' "$ENV_FILE" | xargs)
-            DB_HOST="${POSTGRES_HOST:-localhost}"
-            DB_PORT="${POSTGRES_PORT:-5432}"
-            DB_NAME="${POSTGRES_DB:-snailycad}"
-            DB_USER="${POSTGRES_USER:-postgres}"
-            DB_PASSWORD="${POSTGRES_PASSWORD}"
-        fi
+    if [ -n "$SQL_DUMP" ]; then
+        print_message "Found SQL dump: $(basename $SQL_DUMP)"
+        IMPORT_SQL="yes"
     else
-        print_error "Failed to extract backup file"
+        print_warning "No SQL dump found in backup file"
         IMPORT_SQL="no"
     fi
 else
-    print_warning "No backup file found in /home/snaily-cadv4/"
-    print_message "Continuing without backup import..."
+    print_warning "No backup file found for SQL import"
     IMPORT_SQL="no"
 fi
 echo ""

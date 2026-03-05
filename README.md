@@ -1,70 +1,111 @@
-Here’s a clean, organized **README.md** built from the commands you provided:
+# SnailyCAD Backup, Import & Repair Scripts
 
----
+This guide explains how to download, prepare, and run the SnailyCAD
+backup, import, and repair scripts.
 
-# SnailyCAD Backup & Import Scripts
+These scripts help you: - Backup your SnailyCAD installation - Import /
+restore backups - Fix common SnailyCAD issues
 
-This guide walks you through downloading, giving execution permissions, and running the backup and import scripts for SnailyCAD.
+------------------------------------------------------------------------
 
----
+## 📦 Backup Script
 
-## 📦 Backup Script (Primary Method)
+Use this script to create a backup of your SnailyCAD installation.
 
-### 1. Download the backup script
+### 1. Download the Script
 
-```bash
+``` bash
 wget -O /home/backup_snaily.sh https://raw.githubusercontent.com/EWANZO101/sm-move/main/backup_snaily.sh
 ```
 
-### 2. Make it executable
+### 2. Make the Script Executable
 
-```bash
+``` bash
 chmod +x /home/backup_snaily.sh
 ```
 
-### 3. Run the script
+### 3. Stop SnailyCAD Services (Recommended)
 
-```bash
+``` bash
+sudo systemctl stop start-snaily-cadv4.service
+pm2 stop all
+```
+
+### 4. Run the Backup Script
+
+``` bash
 /home/backup_snaily.sh
 ```
-##########################################################
-sudo systemctl stop start-snaily-cadv4.service
 
+------------------------------------------------------------------------
 
-pm2 stop all
+## 📥 Import Script
 
-#################################################################
----
+Use this script to restore or import a SnailyCAD backup.
 
-## 📥 Import Script (Primary Method)
+### 1. Download the Script
 
-### 1. Download the import script
-
-```bash
+``` bash
 wget -O /home/import_snaily.sh https://raw.githubusercontent.com/EWANZO101/sm-move/main/import_snaily.sh
 ```
 
-### 2. Make it executable
+### 2. Make the Script Executable
 
-```bash
+``` bash
 chmod +x /home/import_snaily.sh
 ```
 
-### 3. Run the script
+### 3. Run the Import Script
 
-```bash
+``` bash
 /home/import_snaily.sh
 ```
 
----
+------------------------------------------------------------------------
 
-# Download the script using wget
+## 🛠 Complete SnailyCAD Repair Script
+
+This script attempts to automatically fix common SnailyCAD issues.
+
+### 1. Download the Script
+
+``` bash
 wget https://raw.githubusercontent.com/EWANZO101/sm-move/main/complete_snailycad_fix.sh
+```
 
-# Make it executable
+### 2. Make it Executable
+
+``` bash
 chmod +x complete_snailycad_fix.sh
+```
 
-# Run it with sudo
+### 3. Run the Script
+
+``` bash
 sudo bash complete_snailycad_fix.sh
+```
 
-If you want, I can also format this with headings, badges, or add instructions for scheduling backups with cron.
+------------------------------------------------------------------------
+
+## 🔄 Restart SnailyCAD Services
+
+After completing a backup, import, or repair, restart services:
+
+``` bash
+sudo systemctl start start-snaily-cadv4.service
+pm2 start all
+```
+
+------------------------------------------------------------------------
+
+## ⚠️ Important Notes
+
+-   Always backup your system before performing imports or fixes.
+-   Stopping services before backup helps prevent database corruption.
+-   These scripts assume SnailyCAD v4 systemd + PM2 setup.
+
+------------------------------------------------------------------------
+
+## 📁 Repository
+
+https://github.com/EWANZO101/sm-move
